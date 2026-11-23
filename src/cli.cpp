@@ -1,10 +1,10 @@
-// Console mode, built into RigSense.exe (one program for everything):
-//   RigSense.exe --cli                 list GPUs, then print 5 on-card per-pin readings
-//   RigSense.exe --cli -n 0            print forever (Ctrl+C to stop)
-//   RigSense.exe --cli --force         read even if the card is not in the known list
-//   RigSense.exe --cli --port 1 --addr 0x2B --gpu 0
-//   RigSense.exe --cli --sensors       list every sensor the panel can use
-//   RigSense.exe --cli --meters        find an external per-pin meter (WireView Pro II / PMD2X / MSI PSU) and read it
+// Console mode, built into CoreHUD.exe (one program for everything):
+//   CoreHUD.exe --cli                 list GPUs, then print 5 on-card per-pin readings
+//   CoreHUD.exe --cli -n 0            print forever (Ctrl+C to stop)
+//   CoreHUD.exe --cli --force         read even if the card is not in the known list
+//   CoreHUD.exe --cli --port 1 --addr 0x2B --gpu 0
+//   CoreHUD.exe --cli --sensors       list every sensor the panel can use
+//   CoreHUD.exe --cli --meters        find an external per-pin meter (WireView Pro II / PMD2X / MSI PSU) and read it
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <objbase.h>
@@ -84,7 +84,7 @@ int CliMain(int argc, char** argv) {
         else if (!strcmp(argv[i], "--gpu")) next(gpuIndex);
         else if (!strcmp(argv[i], "--interval")) next(interval);
         else if (!strcmp(argv[i], "--force")) force = true;
-        else { printf("usage: RigSense.exe --cli [--sensors | --meters] [-n count] [--interval ms] [--gpu i] [--port p] [--addr 0x2B] [--force]\n"); return 2; }
+        else { printf("usage: CoreHUD.exe --cli [--sensors | --meters] [-n count] [--interval ms] [--gpu i] [--port p] [--addr 0x2B] [--force]\n"); return 2; }
     }
 
     std::string err;

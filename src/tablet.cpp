@@ -24,7 +24,7 @@ const char* kPage = R"HTML(<!doctype html>
 <meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="theme-color" content="#0b0e12">
 <link rel="manifest" href="manifest.json?k=%KEY%"><link rel="icon" href="icon.png?k=%KEY%"><link rel="apple-touch-icon" href="icon.png?k=%KEY%">
-<title>RigSense panel</title>
+<title>CoreHUD panel</title>
 <style>
 html,body{margin:0;padding:0;width:100%;height:100%;background:#0b0e12;overflow:hidden;-webkit-user-select:none;user-select:none}
 img{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
@@ -32,14 +32,14 @@ img{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
 #s small{color:#7d8590;font-size:14px}
 </style></head><body>
 <img id="a" alt=""><img id="b" alt="" style="visibility:hidden">
-<div id="s">Connecting to RigSense&hellip;<br><small>Tap the screen for fullscreen</small></div>
+<div id="s">Connecting to CoreHUD&hellip;<br><small>Tap the screen for fullscreen</small></div>
 <script>
 var K='%KEY%',fails=0,front=document.getElementById('a'),back=document.getElementById('b'),st=document.getElementById('s');
 function size(){var r=window.devicePixelRatio||1,w=Math.round(window.innerWidth*r),h=Math.round(window.innerHeight*r),m=2560;
  if(w>m){h=Math.round(h*m/w);w=m;} if(h>m){w=Math.round(w*m/h);h=m;} return [Math.max(w,160),Math.max(h,120)];}
 function tick(){var s=size();
  back.onload=function(){back.style.visibility='visible';front.style.visibility='hidden';var t=front;front=back;back=t;fails=0;st.style.display='none';setTimeout(tick,450);};
- back.onerror=function(){fails++;if(fails>2){st.style.display='block';st.innerHTML='Reconnecting to RigSense&hellip;<br><small>Is RigSense running and the tablet panel switched on?</small>';}setTimeout(tick,1500);};
+ back.onerror=function(){fails++;if(fails>2){st.style.display='block';st.innerHTML='Reconnecting to CoreHUD&hellip;<br><small>Is CoreHUD running and the tablet panel switched on?</small>';}setTimeout(tick,1500);};
  back.src='frame.jpg?k='+K+'&w='+s[0]+'&h='+s[1]+'&t='+(new Date().getTime());}
 // Keep the screen on: the Wake Lock API where the browser allows it (USB/localhost, newer browsers), plus a muted
 // looping black video, which keeps the screen on in practically every browser - also over plain http (Wi-Fi).
@@ -54,7 +54,7 @@ function lock(){try{if(navigator.wakeLock&&navigator.wakeLock.request){navigator
 document.body.onclick=function(){var d=document.documentElement,f=d.requestFullscreen||d.webkitRequestFullscreen||d.mozRequestFullScreen||d.msRequestFullscreen;if(f){try{f.call(d);}catch(e){}}lock();};
 document.addEventListener('visibilitychange',function(){if(!document.hidden)lock();});
 setInterval(function(){if(v.paused)play();},10000);
-// Connector alarm sound: RigSense says when to beep (the red overlay itself is part of the frame).
+// Connector alarm sound: CoreHUD says when to beep (the red overlay itself is part of the frame).
 // Browsers only allow sound after a tap, so the first tap (fullscreen) also unlocks audio.
 var ac=null,alarm=0;
 function unlockAudio(){try{if(!ac){var C=window.AudioContext||window.webkitAudioContext;if(C)ac=new C();}if(ac&&ac.resume)ac.resume();}catch(e){}}
@@ -233,8 +233,8 @@ void Server::Handle(uintptr_t sock, const std::string& peer) {
     if (path == "/favicon.ico") { Respond(s, 404, "Not Found", "text/plain", "", 0); return; }
     if (QueryParam(query, "k") != key_) {
         const char* msg = "<!doctype html><meta name=viewport content='width=device-width'><body style='background:#0b0e12;color:#aeb5bf;"
-                          "font:18px sans-serif;text-align:center;padding-top:20%'>RigSense: wrong or missing key.<br>"
-                          "Scan the QR code in RigSense (Sensor panel &rsaquo; Tablet / phone) again.</body>";
+                          "font:18px sans-serif;text-align:center;padding-top:20%'>CoreHUD: wrong or missing key.<br>"
+                          "Scan the QR code in CoreHUD (Sensor panel &rsaquo; Tablet / phone) again.</body>";
         Respond(s, 403, "Forbidden", "text/html; charset=utf-8", msg, strlen(msg));
         return;
     }
@@ -260,7 +260,7 @@ void Server::Handle(uintptr_t sock, const std::string& peer) {
         int n = snprintf(a, sizeof a, "%d", alarm_.load());
         Respond(s, 200, "OK", "text/plain", a, size_t(n));
     } else if (path == "/manifest.json") {
-        std::string m = Replace(R"({"name":"RigSense panel","short_name":"RigSense","start_url":"/?k=%KEY%","display":"fullscreen",)"
+        std::string m = Replace(R"({"name":"CoreHUD panel","short_name":"CoreHUD","start_url":"/?k=%KEY%","display":"fullscreen",)"
                                 R"("orientation":"any","background_color":"#0b0e12","theme_color":"#0b0e12",)"
                                 R"("icons":[{"src":"icon.png?k=%KEY%","sizes":"192x192","type":"image/png"}]})",
                                 "%KEY%", key_);

@@ -55,13 +55,13 @@ void SaveTabletCfg() {
 std::vector<unsigned char> MakeKeepAwakeVideo() {
     std::vector<unsigned char> out;
     // mfplat/mfreadwrite are delay-loaded: Windows "N" editions without the Media Feature Pack lack them, and
-    // RigSense must still start there (the page then relies on the Wake Lock API / the tablet's own setting).
+    // CoreHUD must still start there (the page then relies on the Wake Lock API / the tablet's own setting).
     if (!LoadLibraryW(L"mfplat.dll") || !LoadLibraryW(L"mfreadwrite.dll")) return out;
     if (FAILED(MFStartup(MF_VERSION, MFSTARTUP_LITE))) return out;
     const UINT32 W = 64, H = 64, FPS = 10, FRAMES = 20;
     wchar_t tmp[MAX_PATH + 1] = {};
     GetTempPathW(MAX_PATH, tmp);
-    std::wstring file = std::wstring(tmp) + L"rigsense-keepawake-" + std::to_wstring(GetCurrentProcessId()) + L".mp4";
+    std::wstring file = std::wstring(tmp) + L"corehud-keepawake-" + std::to_wstring(GetCurrentProcessId()) + L".mp4";
     IMFAttributes* attr = nullptr;
     IMFSinkWriter* wr = nullptr;
     IMFMediaType *mo = nullptr, *mi = nullptr;
@@ -327,7 +327,7 @@ void DrawTabletOverlay(float W, float H) {
     }
     std::wstring st;
     uint32_t sc = kMuted;
-    if (g_tabCfg.mode == tab::MODE_OFF) st = L"Off — RigSense is not serving the panel.";
+    if (g_tabCfg.mode == tab::MODE_OFF) st = L"Off — CoreHUD is not serving the panel.";
     else if (!g_tabError.empty()) { st = L"Could not start: " + Wide(g_tabError); sc = kWarn; }
     else {
         int v = g_tabSrv.Viewers();
@@ -427,7 +427,7 @@ void DrawTabletOverlay(float W, float H) {
         });
         Text(L"(disconnects the old address)", R(tx, wy + 126, tw, 18), Fmt(11), kMuted);
         float ny = wy + q + 40;
-        const wchar_t* notes[] = {L"Windows may ask to allow RigSense on private networks: click Allow.",
+        const wchar_t* notes[] = {L"Windows may ask to allow CoreHUD on private networks: click Allow.",
                                   L"Only devices with this secret address can see the panel.",
                                   L"The tablet can only view it - it can't control your PC."};
         for (auto* n : notes) { Text(n, R(wx, ny, colW, 18), Fmt(11.5f), kMuted); ny += 19; }

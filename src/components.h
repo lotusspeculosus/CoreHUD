@@ -1,4 +1,4 @@
-// Detects the external components RigSense can use and helps installing them
+// Detects the external components CoreHUD can use and helps installing them
 // (download page or "winget install" of the latest version).
 #pragma once
 #include <string>
@@ -9,7 +9,7 @@ namespace comp {
 struct Component {
     std::wstring id;          // "nvidia", "rtss", "lhm", "hwinfo"
     std::wstring name;
-    std::wstring purpose;     // what RigSense uses it for
+    std::wstring purpose;     // what CoreHUD uses it for
     std::wstring hint;        // setup tip shown under the row
     std::wstring url;         // official download page
     std::wstring wingetId;    // empty = not installable via winget

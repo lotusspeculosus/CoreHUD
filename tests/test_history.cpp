@@ -15,7 +15,7 @@ static int g_fail = 0, g_pass = 0;
 static std::wstring TempDir(const wchar_t* name) {
     wchar_t t[MAX_PATH];
     GetTempPathW(MAX_PATH, t);
-    std::wstring d = std::wstring(t) + L"rigsense_test_" + name + L"_" + std::to_wstring(GetCurrentProcessId());
+    std::wstring d = std::wstring(t) + L"corehud_test_" + name + L"_" + std::to_wstring(GetCurrentProcessId());
     CreateDirectoryW(d.c_str(), nullptr);
     return d;
 }
@@ -223,7 +223,7 @@ static void TestBlackBox() {
     {
         // unwritable folder: no crash, nothing recorded
         bbox::Recorder r;
-        r.Configure(L"Z:\\does\\not\\exist\\rigsense", 10, 10);
+        r.Configure(L"Z:\\does\\not\\exist\\corehud", 10, 10);
         r.Add(S(0), true, "x");
         CHECK(!r.Recording());
     }

@@ -88,7 +88,7 @@ std::wstring LayoutsDir() { return mon::ExeDir() + L"\\layouts"; }
 bool Save(const std::wstring& path, const Layout& l) {
     FILE* f = _wfopen(path.c_str(), L"wb");
     if (!f) return false;
-    fprintf(f, "# RigSense sensor panel layout - edit it in the app (Sensor panel tab)\n");
+    fprintf(f, "# CoreHUD sensor panel layout - edit it in the app (Sensor panel tab)\n");
     fprintf(f, "panel width=%d height=%d cols=%d rows=%d gap=%d radius=%d bg=%06X dim=%d autoshow=%d snap=%d display=%s\n", l.width,
             l.height, l.cols, l.rows, l.gap, l.radius, l.bgColor, l.bgDim, l.autoShow ? 1 : 0, l.snapOnDrop ? 1 : 0, U8(l.display).c_str());
     fprintf(f, "image text=%s\n", U8(l.bgImage).c_str());
@@ -246,7 +246,7 @@ bool Import(const std::wstring& path, Layout& out, const std::wstring& imageDir,
             }
         }
     }
-    if (!any) { err = L"This is not an RigSense panel file"; return false; }
+    if (!any) { err = L"This is not an CoreHUD panel file"; return false; }
     out = l;
     return true;
 }

@@ -239,7 +239,7 @@ bool InstallWithWinget(const Component& c) {
     if (c.wingetId.empty()) return false;
     std::wstring args = L"/c title Installing " + c.name + L" & winget install --id " + c.wingetId + L" -e";
     if (!c.wingetSource.empty()) args += L" --source " + c.wingetSource;
-    args += L" --accept-source-agreements --accept-package-agreements & echo. & echo Finished. Go back to RigSense and press Re-check. & pause";
+    args += L" --accept-source-agreements --accept-package-agreements & echo. & echo Finished. Go back to CoreHUD and press Re-check. & pause";
     return reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", L"cmd.exe", args.c_str(), nullptr, SW_SHOWNORMAL)) > 32;
 }
 

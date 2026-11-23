@@ -1,4 +1,4 @@
-// RigSense - local hardware monitor + customizable sensor panel, with per-pin 12V-2x6
+// CoreHUD - local hardware monitor + customizable sensor panel, with per-pin 12V-2x6
 // connector protection on cards that have a per-pin sensor (ASUS ROG Astral).
 // Win32 + Direct2D/DirectWrite, no third-party dependencies.
 #define WIN32_LEAN_AND_MEAN
@@ -29,6 +29,7 @@
 #include "updater.h"
 #include "version.h"
 #include "tablet.h"
+#include "connector.h"
 #include "third_party/qrcodegen/qrcodegen.hpp"
 #include <objbase.h>
 #include <mfapi.h>
@@ -87,6 +88,37 @@ mon::Snapshot g_snap;
 sensors::Registry g_reg;   // every sensor (built-in, any-vendor GPU, HWiNFO, LHM, RTSS)
 std::vector<mon::HistPoint> g_hist;
 std::vector<mon::Event> g_events;
+// The card's power connector(s): detected from power-rail telemetry, or the user's choice in Settings.
+conn::Layout g_connChoice = conn::UNKNOWN;   // [Gpu] Connector (UNKNOWN = auto)
+conn::Result g_connDetected, g_conn;           // g_conn = what the UI uses
+
+void LoadConnectorChoice() {
+    wchar_t b[32] = {};
+    GetPrivateProfileStringW(L"Gpu", L"Connector", L"auto", b, 32, g_ini.c_str());
+    g_connChoice = conn::FromId(b);
+}
+
+// After every sample: what do the sensors say about the connector? A detection sticks for the session
+// (HWiNFO / LibreHardwareMonitor may be closed later).
+void UpdateConnector() {
+    std::vector<conn::Input> in;
+    in.reserve(g_reg.All().size());
+    for (auto& s : g_reg.All()) in.push_back({s.group, s.name, s.unit, s.value, s.ok});
+    // Testing aid: COREHUD_SIMULATE_RAILS=<1..3> adds fake "GPU 8-pin #n" rails (like HWiNFO reports them),
+    // to check the 8-pin view on a PC without such a card. Never set in normal use.
+    static const int simRails = [] { const char* e = getenv("COREHUD_SIMULATE_RAILS"); return e ? std::clamp(atoi(e), 0, 3) : 0; }();
+    for (int i = 1; i <= simRails; ++i) {
+        std::wstring g = L"HWiNFO: GPU [#0]: simulated card", n = L"GPU 8-pin #" + std::to_wstring(i) + L" Input ";
+        in.push_back({g, n + L"Voltage", L"V", 12.1 - 0.03 * i, true});
+        in.push_back({g, n + L"Power", L"W", 60.0 + 55.0 * i + (GetTickCount64() / 500 % 7), true});
+    }
+    double amps = 0;
+    for (int i = 0; i < g_snap.pinCount && i < pins::kMaxPins; ++i) amps += g_snap.amps[i];
+    conn::Result d = conn::Detect(in, g_snap.sensorEnabled && g_snap.pinsOk && amps > 0.5);
+    if (d.layout != conn::UNKNOWN || !g_connDetected.fromTelemetry) g_connDetected = d;
+    else g_connDetected.rails.clear();   // keep the layout, drop stale rail values
+    g_conn = conn::Effective(g_connDetected, g_connChoice);
+}
 
 // ---------- drawing helpers ----------
 template <class T> void SafeRelease(T*& p) { if (p) { p->Release(); p = nullptr; } }
@@ -255,6 +287,81 @@ void DrawStatBox(const D2D1_RECT_F& r, const std::wstring& label, const std::wst
     if (!sub.empty()) Text(sub, R(r.left + 12, r.top + 50, r.right - r.left - 20, 14), Fmt(11), kMuted);
 }
 
+// A small drawing of the card's power connector(s): 12V-2x6 = 2x6 power pins + 4 small sense pins on top,
+// 8-pin PCIe = 2x4 pins (one drawing per connector). Returns the width used.
+float DrawConnectorGlyph(conn::Layout l, float x, float y, float h, uint32_t c, float alpha = 1.f, bool draw = true) {
+    int n = conn::PinConnectors(l);
+    if (n == 0) return 0;
+    bool hp = l == conn::HPWR16;
+    int cols = hp ? 6 : 4;
+    float cell = h / (hp ? 2.9f : 2.3f);
+    float bodyW = cols * cell + cell * 0.5f, gap = cell * 0.9f;
+    float bx = x;
+    for (int k = 0; k < n; ++k) {
+        if (draw) {
+            float top = y + (hp ? cell * 0.6f : 0.f);
+            Stroke(D2D1::RectF(bx, top, bx + bodyW, y + h), c, cell * 0.25f, std::max(1.f, cell * 0.12f), alpha);
+            for (int r = 0; r < 2; ++r)
+                for (int i = 0; i < cols; ++i)
+                    Fill(R(bx + cell * 0.25f + i * cell + cell * 0.15f, top + cell * 0.2f + r * cell + cell * 0.15f, cell * 0.7f, cell * 0.6f), c,
+                         cell * 0.12f, alpha * 0.85f);
+            if (hp)
+                for (int i = 0; i < 4; ++i) Fill(R(bx + bodyW / 2 - cell * 1.15f + i * cell * 0.6f, y, cell * 0.4f, cell * 0.4f), c, 1.f, alpha * 0.7f);
+        }
+        bx += bodyW + gap;
+    }
+    return bx - gap - x;
+}
+
+// Cards with 8-pin PCIe connectors (or slot power only): no per-pin monitoring needed; show the connectors
+// and, when the card reports them, the power per 8-pin input.
+void DrawPcieConnectors(const D2D1_RECT_F& m) {
+    Fill(m, kSurface2, 8);
+    float cx = (m.left + m.right) / 2, w = m.right - m.left;
+    bool railPower = false;
+    for (auto& r : g_conn.rails) railPower |= std::isfinite(r.Power());
+    float contentH = g_conn.layout == conn::NONE ? 100.f : 60 + 34 + (railPower ? 90.f : 30.f) + 40;
+    float y = m.top + std::max(24.f, (m.bottom - m.top - 40 - contentH) / 2);   // centred above the footer line
+    if (g_conn.layout == conn::NONE) {
+        Text(L"No power cable to watch", R(m.left, y + 40, w, 26), Fmt(16, 1, 1), kInk);
+        Text(L"This card gets all its power from the PCIe slot on the motherboard (up to 75 W).", R(m.left + 10, y + 70, w - 20, 22), Fmt(12.5f, 0, 1), kInk2);
+    } else {
+        float gw = DrawConnectorGlyph(g_conn.layout, 0, 0, 44, kAccent, 1.f, false);
+        DrawConnectorGlyph(g_conn.layout, cx - gw / 2, y, 44, kAccent);
+        y += 60;
+        Text(conn::Name(g_conn.layout), R(m.left, y, w, 26), Fmt(16, 1, 1), kInk);
+        y += 34;
+        bool anyPower = false;
+        for (auto& r : g_conn.rails) anyPower |= std::isfinite(r.Power());
+        if (anyPower) {
+            int n = int(g_conn.rails.size());
+            float colW = std::min(220.f, (w - 40) / n), x = cx - colW * n / 2;
+            for (const auto& r : g_conn.rails) {
+                double p = r.Power();
+                float bx = x + 14, bwid = colW - 28;
+                Text(F(L"8-pin #%d", r.index), R(x, y, colW, 18), Fmt(12, 1, 1), kInk2);
+                Text(std::isfinite(p) ? F(L"%.0f W", p) : std::wstring(L"—"), R(x, y + 18, colW, 26), Fmt(18, 1, 1), p > 150 ? kWarn : kInk);
+                Fill(R(bx, y + 50, bwid, 8), kSurface3, 4);
+                if (std::isfinite(p) && p > 0) Fill(R(bx, y + 50, bwid * float(std::min(p, 300.0) / 300), 8), p > 150 ? kWarn : kAccent, 4);
+                Line(bx + bwid / 2, y + 46, bx + bwid / 2, y + 62, kMuted, 1.f);   // the 150 W rating, at the middle
+                Text(std::isfinite(r.volts) ? F(L"150 W rated · %.2f V", r.volts) : std::wstring(L"150 W rated"), R(x, y + 62, colW, 16),
+                     Fmt(11, 0, 1), kMuted);
+                x += colW;
+            }
+            y += 90;
+        } else {
+            Text(L"Your card reports only its total power, not the power per connector.", R(m.left + 10, y, w - 20, 20), Fmt(12, 0, 1), kInk2);
+            y += 30;
+        }
+        Text(L"8-pin connectors have a big safety margin: each is rated 150 W and its three 12 V pins can carry far more.",
+             R(m.left + 10, y, w - 20, 20), Fmt(12, 0, 1), kInk2);
+        Text(L"Per-pin monitoring matters for the 12V-2x6 (600 W over six pins), not for these.", R(m.left + 10, y + 20, w - 20, 20), Fmt(12, 0, 1), kInk2);
+    }
+    std::wstring how = g_conn.fromTelemetry ? L"Detected from the " + g_conn.how + L"  ·  wrong? Settings › Power connector"
+                                            : L"Set in Settings › Power connector";
+    Text(how, R(m.left + 10, m.bottom - 30, w - 20, 20), Fmt(11.5f, 0, 1), kMuted);
+}
+
 void DrawPinPanel(const D2D1_RECT_F& P) {
     const auto& s = g_snap;
     const auto& c = s.cfg;
@@ -262,11 +369,22 @@ void DrawPinPanel(const D2D1_RECT_F& P) {
     Anchor("pins", P);
     float x0 = P.left + 18, x1 = P.right - 18;
     float y = P.top + 14;
+    bool pcie = !s.sensorEnabled && (g_conn.layout == conn::PCIE8_1 || g_conn.layout == conn::PCIE8_2 || g_conn.layout == conn::PCIE8_3 ||
+                                     g_conn.layout == conn::NONE);
     Fill(R(x0, y + 4, 26, 26), kAccent, 6, 0.9f);
     Text(L"", R(x0, y + 4, 26, 26), Fmt(13, 0, 1, true), kBg);
-    Text(L"Pin distribution", R(x0 + 36, y, 160, 34), Fmt(16, 1), kInk);
-    if (s.sensorEnabled && !s.pinSource.empty())
+    Text(pcie ? L"Power connectors" : L"Pin distribution", R(x0 + 36, y, 170, 34), Fmt(16, 1), kInk);
+    if (s.sensorEnabled && !s.pinSource.empty()) {
         Text(L"\u00b7  " + s.pinSource, R(x0 + 190, y, x1 - x0 - 190 - 130, 34), Fmt(12), kMuted);
+    } else if (!pcie) {   // which connector the card has (or that it isn't known)
+        float gx = x0 + 196 + DrawConnectorGlyph(g_conn.layout, x0 + 196, y + 9, 16, kInk2, 0.9f);
+        Text(g_conn.layout == conn::UNKNOWN ? std::wstring(L"Connector not detected") : std::wstring(conn::Name(g_conn.layout)),
+             R(gx + 8, y, x1 - gx - 140, 34), Fmt(12), kMuted);
+    }
+    if (pcie) {
+        DrawPcieConnectors(D2D1::RectF(x0, y + 46, x1, P.bottom - 14));
+        return;
+    }
     const wchar_t* modes[] = {L"A", L"W", L"V"};
     for (int i = 0; i < 3; ++i) Button(R(x1 - (3 - i) * 40 + 4, y + 2, 36, 30), modes[i], HIT_MODE + i, g_mode == i, 14);
     y += 46;
@@ -334,9 +452,18 @@ void DrawPinPanel(const D2D1_RECT_F& P) {
         std::wstring t1, t2;
         bool info = !s.sensorEnabled;   // not an error: this GPU simply has no per-pin sensor
         if (!s.sensorEnabled) {
-            t1 = s.haveGpu ? F(L"No per-pin sensor on this card (subsystem %04X:%04X) and no external meter found", s.subSystemId & 0xFFFF, s.subSystemId >> 16)
-                           : std::wstring(L"No per-pin sensor or external meter found");
+            if (g_conn.layout == conn::HPWR16)
+                t1 = L"Your card has a 12V-2x6 connector, but no per-pin sensor or meter was found";
+            else
+                t1 = s.haveGpu ? F(L"No per-pin sensor on this card (subsystem %04X:%04X) and no external meter found", s.subSystemId & 0xFFFF, s.subSystemId >> 16)
+                               : std::wstring(L"No per-pin sensor or external meter found");
             t2 = L"Per-pin monitoring works with any GPU through a Thermal Grizzly WireView Pro II, ElmorLabs PMD2X or MSI MPG Ai1300TS/Ai1600TS PSU (USB connected).";
+            if (g_conn.layout == conn::UNKNOWN) {   // most cards use 8-pin: let the user say which one
+                float my = m.top + (m.bottom - m.top) / 2 + 62;
+                Text(L"Most cards use 8-pin connectors and don't need this. Which one does yours have?", R(m.left + 10, my, m.right - m.left - 20, 20),
+                     Fmt(12, 1, 1), kInk2);
+                Button(R((m.left + m.right) / 2 - 90, my + 26, 180, 30), L"Set the connector…", HIT_INI, true);
+            }
         } else if (s.pinSourceId == "astral") {
             t1 = L"Per-pin sensor read failed";
             t2 = Wide(s.pinError) + L"  \u2014  close other tools polling the GPU I2C bus (Armoury Crate, GPU Tweak) or check I2CPort/I2CAddr.";
@@ -561,7 +688,7 @@ void DrawDashboard(float W, float H) {
     Fill(R(pad, y + 2, 44, 44), kSurface2, 8);
     Stroke(R(pad, y + 2, 44, 44), kBorder, 8);
     Text(L"GPU", R(pad, y + 2, 44, 44), Fmt(13, 2, 1), kInk);
-    std::wstring title = s.knownCard ? Wide(s.model) : s.haveGpu ? Wide(s.gpuName) : !g_reg.gpuName.empty() ? g_reg.gpuName : L"RigSense";
+    std::wstring title = s.knownCard ? Wide(s.model) : s.haveGpu ? Wide(s.gpuName) : !g_reg.gpuName.empty() ? g_reg.gpuName : L"CoreHUD";
     Text(title, R(pad + 56, y, W - 400, 28), Fmt(22, 1), kInk);
     if (s.haveGpu)
         Text(F(L"nvidia-pci %02X · %08x / %08x · %hs", s.busId, s.deviceId, s.subSystemId, s.gpuName.c_str()),
@@ -577,9 +704,18 @@ void DrawDashboard(float W, float H) {
     bool ok = s.pinsOk;
     std::wstring na = L"—";
     float kw = (W - 2 * pad - 2 * 12) / 3, kh = 110;
-    DrawKpi(R(pad, y, kw, kh), L"CONNECTOR POWER", ok ? F(L"%.1f", connW) : na, L"W",
-            !s.sensorEnabled ? std::wstring(L"No per-pin sensor or meter found (see Pin distribution)")
-            : s.stats.powerW >= 0 ? F(L"Board total (driver): %.0f W  ·  rest via PCIe slot", s.stats.powerW) : L"", L"");
+    // 8-pin cards that report their rails: the sum of the 8-pin inputs; a 16-pin total from telemetry otherwise
+    double railW = 0;
+    bool railOk = !g_conn.rails.empty();
+    for (auto& r : g_conn.rails) { double p = r.Power(); railOk &= std::isfinite(p); railW += std::isfinite(p) ? p : 0; }
+    std::wstring connVal = ok ? F(L"%.1f", connW) : railOk ? F(L"%.1f", railW) : std::isfinite(g_conn.hpwrWatts) ? F(L"%.1f", g_conn.hpwrWatts) : na;
+    std::wstring connSub = ok ? (s.stats.powerW >= 0 ? F(L"Board total (driver): %.0f W  ·  rest via PCIe slot", s.stats.powerW) : std::wstring())
+                         : railOk ? F(L"%d× 8-pin inputs, as reported by the card", int(g_conn.rails.size()))
+                         : g_conn.layout == conn::NONE ? std::wstring(L"Slot-powered card: no power cable")
+                         : g_conn.layout == conn::PCIE8_1 || g_conn.layout == conn::PCIE8_2 || g_conn.layout == conn::PCIE8_3
+                             ? std::wstring(conn::Name(g_conn.layout)) + L" · the card doesn't report power per connector"
+                             : std::wstring(L"No per-pin sensor or meter found (see Pin distribution)");
+    DrawKpi(R(pad, y, kw, kh), L"CONNECTOR POWER", connVal, L"W", connSub, L"");
     DrawKpi(R(pad + kw + 12, y, kw, kh), L"TOTAL CURRENT", ok ? F(L"%.2f", totA) : na, L"A",
             ok ? F(L"Average %.2f A per pin", totA / 6) : L"", L"");
     DrawKpi(R(pad + 2 * (kw + 12), y, kw, kh), L"VOLTAGE", ok ? F(L"%.2f", avgV) : na, L"V",
@@ -774,13 +910,13 @@ void TrayInit(HICON icon) {
     g_nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
     g_nid.uCallbackMessage = WM_APP_TRAY;
     g_nid.hIcon = icon;
-    wcscpy_s(g_nid.szTip, L"RigSense");
+    wcscpy_s(g_nid.szTip, L"CoreHUD");
     Shell_NotifyIconW(NIM_ADD, &g_nid);
 }
 
 void TrayNotify(int level, const std::wstring& text) {
     g_nid.uFlags = NIF_INFO;
-    wcscpy_s(g_nid.szInfoTitle, level == 2 ? L"RigSense — CRITICAL" : L"RigSense — warning");
+    wcscpy_s(g_nid.szInfoTitle, level == 2 ? L"CoreHUD — CRITICAL" : L"CoreHUD — warning");
     wcsncpy_s(g_nid.szInfo, text.c_str(), _TRUNCATE);
     g_nid.dwInfoFlags = level == 2 ? NIIF_ERROR : NIIF_WARNING;
     Shell_NotifyIconW(NIM_MODIFY, &g_nid);
@@ -875,6 +1011,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         mon::GetHistory(g_hist);
         mon::GetEvents(g_events);
         OnSampleForPanel();
+        UpdateConnector();
         if (g_setupOpen && GetTickCount() - g_compsTick > 3000) RecheckComponents();
         if (g_upd.applyPending) TryApplyUpdate();
         RenderTabletFrame();
@@ -883,8 +1020,8 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
             double connW = 0;
             for (int i = 0; i < 6; ++i) connW += g_snap.volts[i] * g_snap.amps[i];
             wchar_t t[128];
-            if (g_snap.pinsOk) swprintf(t, 128, L"RigSense — %.0f W · max pin %.2f A", connW, *std::max_element(g_snap.amps, g_snap.amps + 6));
-            else wcscpy_s(t, L"RigSense");
+            if (g_snap.pinsOk) swprintf(t, 128, L"CoreHUD — %.0f W · max pin %.2f A", connW, *std::max_element(g_snap.amps, g_snap.amps + 6));
+            else wcscpy_s(t, L"CoreHUD");
             SetWindowTextW(h, t);
             if (g_nid.cbSize) {
                 g_nid.uFlags = NIF_TIP;
@@ -1073,7 +1210,7 @@ HICON MakeIcon(int size) {
 
 int CliMain(int argc, char** argv);   // cli.cpp - console mode, built into this exe
 
-// "RigSense.exe --cli ..." runs the console tools in the terminal it was started from (or into a pipe/file).
+// "CoreHUD.exe --cli ..." runs the console tools in the terminal it was started from (or into a pipe/file).
 static int RunCli(int argc, LPWSTR* wargv) {
     HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
     DWORD type = out && out != INVALID_HANDLE_VALUE ? GetFileType(out) : FILE_TYPE_UNKNOWN;
@@ -1089,7 +1226,7 @@ static int RunCli(int argc, LPWSTR* wargv) {
         printf("\n");
     }
     std::vector<std::string> args;
-    args.push_back("RigSense.exe");
+    args.push_back("CoreHUD.exe");
     for (int i = 2; i < argc; ++i) {
         int n = WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, nullptr, 0, nullptr, nullptr);
         std::string a(size_t(n > 0 ? n - 1 : 0), '\0');
@@ -1129,9 +1266,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
         }
         if (argv) LocalFree(argv);
     }
-    HANDLE single = CreateMutexW(nullptr, TRUE, L"Local\\RigSenseSingleInstance");
+    HANDLE single = CreateMutexW(nullptr, TRUE, L"Local\\CoreHUDSingleInstance");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        HWND other = FindWindowW(L"RigSenseWnd", nullptr);
+        HWND other = FindWindowW(L"CoreHUDWnd", nullptr);
         if (other) { ShowWindow(other, SW_RESTORE); SetForegroundWindow(other); }
         return 0;
     }
@@ -1139,7 +1276,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     CoInitializeSecurity(nullptr, -1, nullptr, nullptr, RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_NONE, nullptr);
     if (FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &g_d2d)) ||
         FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), reinterpret_cast<IUnknown**>(&g_dw)))) {
-        MessageBoxW(nullptr, L"Direct2D / DirectWrite unavailable", L"RigSense", MB_ICONERROR);
+        MessageBoxW(nullptr, L"Direct2D / DirectWrite unavailable", L"CoreHUD", MB_ICONERROR);
         return 1;
     }
     float dashes[] = {4.f, 3.f};
@@ -1157,17 +1294,17 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hIcon = bigIcon;
     wc.hIconSm = smallIcon;
-    wc.lpszClassName = L"RigSenseWnd";
+    wc.lpszClassName = L"CoreHUDWnd";
     RegisterClassExW(&wc);
     WNDCLASSEXW pc = wc;
     pc.style = CS_DBLCLKS;
     pc.lpfnWndProc = PanelProc;
-    pc.lpszClassName = L"RigSensePanelWnd";
+    pc.lpszClassName = L"CoreHUDPanelWnd";
     RegisterClassExW(&pc);
     WNDCLASSEXW ic = wc;
     ic.style = 0;
     ic.lpfnWndProc = IdentifyProc;
-    ic.lpszClassName = L"RigSenseIdentify";
+    ic.lpszClassName = L"CoreHUDIdentify";
     RegisterClassExW(&ic);
 
     // sensor panel layouts
@@ -1175,6 +1312,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     const bool firstRun = GetFileAttributesW(g_ini.c_str()) == INVALID_FILE_ATTRIBUTES;
     LoadSlots();
     LoadAlarmCfg();
+    LoadConnectorChoice();
     EnumMonitors();
 
     RECT wa;
@@ -1182,7 +1320,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     UINT dpi = GetDpiForSystem();
     int w = std::min(MulDiv(1600, dpi, 96), int((wa.right - wa.left) * 0.95));
     int hgt = std::min(MulDiv(1000, dpi, 96), int((wa.bottom - wa.top) * 0.95));
-    g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"RigSense", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, w, hgt,
+    g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"CoreHUD", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, w, hgt,
                              nullptr, nullptr, inst, nullptr);
     BOOL dark = TRUE;
     DwmSetWindowAttribute(g_hwnd, 20 /*DWMWA_USE_IMMERSIVE_DARK_MODE*/, &dark, sizeof dark);
@@ -1196,8 +1334,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     ApplyTablet();
     MakeTabletIcon();
     if (justUpdated) {
-        mon::LogEvent(0, L"Updated to RigSense " RIGSENSE_VERSION L" (build " RIGSENSE_BUILD L")");
-        TrayNotify(1, L"RigSense was updated to " RIGSENSE_VERSION L".");
+        mon::LogEvent(0, L"Updated to CoreHUD " COREHUD_VERSION L" (build " COREHUD_BUILD L")");
+        TrayNotify(1, L"CoreHUD was updated to " COREHUD_VERSION L".");
     }
     SetTimer(g_hwnd, TIMER_UPDATE, 20 * 1000, nullptr);   // first update check 20 s after start
 

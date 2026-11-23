@@ -33,7 +33,7 @@ const TourStep kTour[] = {
      L"and the voltage."},
     {TAB_DASH, "pins", L"Every pin, live",
      L"The cable has 6 power pins. Each bar is one pin. Green is fine, amber is a warning, red means over the limit. If a pin goes red, "
-     L"RigSense beeps, shows a notification and puts a big red alarm on every screen (panels and tablet too). "
+     L"CoreHUD beeps, shows a notification and puts a big red alarm on every screen (panels and tablet too). "
      L"No sensor on your card? A WireView Pro II, PMD2X or MSI Ai1300TS/Ai1600TS power supply adds one."},
     {TAB_DASH, "gpu", L"GPU, CPU and more",
      L"Temperatures, clocks, usage and power of your graphics card and PC. Works with NVIDIA, AMD and Intel."},
@@ -45,7 +45,7 @@ const TourStep kTour[] = {
     {TAB_PANEL, "preview", L"Edit by dragging",
      L"Click a widget to select it, drag it to move it, and drag its corner to make it bigger or smaller. Delete removes it, the arrow keys nudge it."},
     {TAB_PANEL, "sensorcol", L"Pick what to show",
-     L"Every sensor RigSense can read is in this list. Click one to add it, or to change the selected widget. Type in the box to search (for example “fps”)."},
+     L"Every sensor CoreHUD can read is in this list. Click one to add it, or to change the selected widget. Type in the box to search (for example “fps”)."},
     {TAB_PANEL, "panelcol", L"Show it anywhere",
      L"“Show on” picks where this layout appears: a floating window, or fullscreen on a second screen. Several layouts can be open at the same "
      L"time. “Tablet / phone…” turns an old tablet or phone into a wireless panel."},
@@ -56,9 +56,34 @@ const TourStep kTour[] = {
      L"Change the limits, the alarms, the black box and the connector wear check (it learns how your pins share the load and warns if one slowly takes more), "
      L"and the automatic updates. Tip: Settings › Test alarm shows what an alarm looks like."},
     {TAB_DASH, "tour", L"That's it!",
-     L"RigSense keeps watching in the background, also from the tray icon next to the clock. You can take this tour again any time with this button."},
+     L"CoreHUD keeps watching in the background, also from the tray icon next to the clock. You can take this tour again any time with this button."},
 };
 constexpr int kTourSteps = int(sizeof kTour / sizeof kTour[0]);
+
+// Steps 1 and 2 talk about the card's own connector: 12V-2x6, 8-pin, slot power, or "not known yet".
+void TourConnectorText(int step, std::wstring& title, std::wstring& body) {
+    if (step > 1) return;
+    conn::Layout l = g_conn.layout;
+    bool pin = g_snap.sensorEnabled;
+    if (l == conn::HPWR16 || pin) return;   // the default texts are written for 12V-2x6
+    bool pcie = l == conn::PCIE8_1 || l == conn::PCIE8_2 || l == conn::PCIE8_3;
+    if (step == 0) {
+        title = l == conn::NONE ? L"Your card's power at a glance" : L"Your power connectors at a glance";
+        body = l == conn::NONE ? L"Your graphics card gets all its power from the motherboard slot, so there's no power cable to watch. These cards stay empty; "
+                                 L"the rest of CoreHUD (GPU, CPU, sensor panels) works as usual."
+             : pcie ? std::wstring(L"Your card uses ") + conn::Name(l) +
+                          L" power connectors. When the card reports the power per connector, it shows up here."
+                    : L"High-end cards use one 16-pin 12V-2x6 power connector; most others use 8-pin PCIe connectors. CoreHUD detects yours when the card "
+                      L"or a monitoring tool reports it. If it can't, you can pick it in Settings › Power connector.";
+    } else {
+        title = pcie ? L"8-pin connectors: big safety margin" : l == conn::NONE ? L"Nothing to watch here" : L"Per-pin monitoring";
+        body = pcie ? L"Each 8-pin connector is rated 150 W and its pins can carry far more, so it doesn't need pin-by-pin monitoring. This panel shows "
+                      L"your connectors and the power through each one when the card reports it."
+             : l == conn::NONE ? L"Slot-powered cards draw at most 75 W through the motherboard. There's no cable that can overheat."
+                               : L"For 12V-2x6 cards CoreHUD shows all 6 pins live and raises a big red alarm on every screen if one goes over its limit. "
+                                 L"Not sure which connector you have? Look where the power cable plugs into the card: one wide 16-pin plug, or 8-pin plugs.";
+    }
+}
 
 void MarkTourSeen() { WritePrivateProfileStringW(L"Tour", L"Seen", L"1", g_ini.c_str()); }
 
@@ -160,11 +185,11 @@ void DrawTour(float W, float H) {
     if (g_tour < 0) {
         Fill(D2D1::RectF(0, 0, W, H), 0x000000, 0, 0.62f);
         std::wstring body = g_tourFirstRun
-            ? L"RigSense watches your graphics card's power connector pin by pin, shows your PC's sensors and lets you build your own sensor panels. "
-              L"Want a quick tour? It takes about a minute."
+            ? L"CoreHUD watches your graphics card's power connector (pin by pin on 12V-2x6 cards), shows your PC's sensors and lets you build your own "
+              L"sensor panels. Want a quick tour? It takes about a minute."
             : L"New in this version: several sensor panel layouts at once, a red alarm on every screen, the connector black box and the wear check. "
               L"Want a quick tour of the whole app? It takes about a minute.";
-        DrawTourCard(W, H, nullptr, L"", g_tourFirstRun ? L"Welcome to RigSense" : L"RigSense " RIGSENSE_VERSION, body, true);
+        DrawTourCard(W, H, nullptr, L"", g_tourFirstRun ? L"Welcome to CoreHUD" : L"CoreHUD " COREHUD_VERSION, body, true);
         return;
     }
     const TourStep& st = kTour[g_tour];
@@ -180,7 +205,9 @@ void DrawTour(float W, float H) {
     } else {
         Fill(D2D1::RectF(0, 0, W, H), 0x000000, 0, 0.62f);
     }
-    DrawTourCard(W, H, A, F(L"STEP %d OF %d", g_tour + 1, kTourSteps), st.title, st.body, false);
+    std::wstring title = st.title, body = st.body;
+    TourConnectorText(g_tour, title, body);
+    DrawTourCard(W, H, A, F(L"STEP %d OF %d", g_tour + 1, kTourSteps), title, body, false);
 }
 
 // Keyboard while the tour is showing: arrows / Enter step, Esc ends. Returns true if handled.

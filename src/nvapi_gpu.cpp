@@ -125,7 +125,7 @@ bool ReadByte(GpuHandle gpu, uint8_t port, uint8_t addr7, uint8_t reg, uint8_t& 
 
 bool Init(std::string& err) {
     if (g_dll) return true;
-    if (getenv("RIGSENSE_SIMULATE_NO_NVIDIA")) { err = "simulated: no NVIDIA driver"; return false; }   // testing the AMD/Intel path
+    if (getenv("COREHUD_SIMULATE_NO_NVIDIA")) { err = "simulated: no NVIDIA driver"; return false; }   // testing the AMD/Intel path
     g_dll = LoadLibraryExW(L"nvapi64.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (!g_dll) { err = "nvapi64.dll not found (NVIDIA driver not installed?)"; return false; }
     auto qi = reinterpret_cast<QueryInterface_t>(GetProcAddress(g_dll, "nvapi_QueryInterface"));

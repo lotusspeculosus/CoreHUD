@@ -1,5 +1,5 @@
 @echo off
-rem Builds RigSense.exe - one program: the app, the updater and the console mode (RigSense.exe --cli).
+rem Builds CoreHUD.exe - one program: the app, the updater and the console mode (CoreHUD.exe --cli).
 setlocal
 cd /d "%~dp0"
 if defined VSCMD_VER goto :build
@@ -10,20 +10,20 @@ call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" >nul 2>nul
 :build
 if not exist build mkdir build
 if not exist bin mkdir bin
-rem RIGSENSE_OUT: build somewhere else (e.g. a test copy while bin\RigSense.exe is running)
-if not defined RIGSENSE_OUT set "RIGSENSE_OUT=bin\RigSense.exe"
+rem COREHUD_OUT: build somewhere else (e.g. a test copy while bin\CoreHUD.exe is running)
+if not defined COREHUD_OUT set "COREHUD_OUT=bin\CoreHUD.exe"
 
 rem --- build stamp: git commit (+ if there are uncommitted changes) and date -> build\buildinfo.h ---
 set "GITREV=nogit"
 for /f %%i in ('git rev-parse --short HEAD 2^>nul') do set "GITREV=%%i"
 git diff --quiet HEAD -- src 2>nul || if not "%GITREV%"=="nogit" set "GITREV=%GITREV%+"
 for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd"') do set "BDATE=%%i"
-> build\buildinfo.h echo #define RIGSENSE_BUILD_REV "%GITREV%"
->> build\buildinfo.h echo #define RIGSENSE_BUILD_DATE "%BDATE%"
+> build\buildinfo.h echo #define COREHUD_BUILD_REV "%GITREV%"
+>> build\buildinfo.h echo #define COREHUD_BUILD_DATE "%BDATE%"
 
 set CFLAGS=/nologo /std:c++17 /O2 /MT /EHsc /W3 /utf-8 /DUNICODE /D_UNICODE /D_CRT_SECURE_NO_WARNINGS /Ibuild /Fobuild\
 set LIBS=user32.lib gdi32.lib shell32.lib advapi32.lib ole32.lib oleaut32.lib wbemuuid.lib crypt32.lib dxgi.lib pdh.lib setupapi.lib hid.lib winhttp.lib bcrypt.lib ws2_32.lib iphlpapi.lib mfplat.lib mfreadwrite.lib mfuuid.lib
 rc /nologo /Isrc /fo build\app.res src\app.rc || exit /b 1
-cl %CFLAGS% src\app.cpp src\cli.cpp src\monitor.cpp src\pinsources.cpp src\panel.cpp src\sensors.cpp src\gpu_generic.cpp src\components.cpp src\updater.cpp src\tablet.cpp src\wear.cpp src\blackbox.cpp src\third_party\qrcodegen\qrcodegen.cpp src\nvapi_gpu.cpp src\nvml_gpu.cpp build\app.res /Fe:"%RIGSENSE_OUT%" /link /SUBSYSTEM:WINDOWS d2d1.lib dwrite.lib dwmapi.lib windowscodecs.lib comdlg32.lib %LIBS% delayimp.lib /DELAYLOAD:mfplat.dll /DELAYLOAD:mfreadwrite.dll || exit /b 1
+cl %CFLAGS% src\app.cpp src\cli.cpp src\monitor.cpp src\pinsources.cpp src\panel.cpp src\sensors.cpp src\gpu_generic.cpp src\components.cpp src\updater.cpp src\tablet.cpp src\wear.cpp src\blackbox.cpp src\connector.cpp src\third_party\qrcodegen\qrcodegen.cpp src\nvapi_gpu.cpp src\nvml_gpu.cpp build\app.res /Fe:"%COREHUD_OUT%" /link /SUBSYSTEM:WINDOWS d2d1.lib dwrite.lib dwmapi.lib windowscodecs.lib comdlg32.lib %LIBS% delayimp.lib /DELAYLOAD:mfplat.dll /DELAYLOAD:mfreadwrite.dll || exit /b 1
 echo.
-echo Built %RIGSENSE_OUT% (%GITREV%, %BDATE%)
+echo Built %COREHUD_OUT% (%GITREV%, %BDATE%)

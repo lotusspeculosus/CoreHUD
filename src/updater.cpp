@@ -49,7 +49,7 @@ bool HttpsGet(const std::string& url, std::vector<unsigned char>& out, std::stri
         err = "refusing non-GitHub or non-HTTPS URL";
         return false;
     }
-    std::wstring ua = L"RigSense/" RIGSENSE_VERSION;
+    std::wstring ua = L"CoreHUD/" COREHUD_VERSION;
     HINTERNET s = WinHttpOpen(ua.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!s) { err = "WinHTTP unavailable"; return false; }
     WinHttpSetTimeouts(s, 5000, 10000, 15000, 30000);
@@ -144,7 +144,7 @@ std::string ExpectedSha(const std::string& text, const std::string& fileName) {
         size_t np = line.find_first_not_of(" \t*", sp);
         if (np == std::string::npos) continue;   // "<hash> *" with no file name
         std::string hash = line.substr(0, sp), name = line.substr(np);
-        if (name != fileName || hash.size() != 64) continue;   // exact file name match (no "RigSense.exe.old" etc.)
+        if (name != fileName || hash.size() != 64) continue;   // exact file name match (no "CoreHUD.exe.old" etc.)
         bool hex = true;
         for (auto& ch : hash) { ch = char(tolower(static_cast<unsigned char>(ch))); hex = hex && isxdigit(static_cast<unsigned char>(ch)); }
         if (hex) return hash;
@@ -194,7 +194,7 @@ bool FetchLatest(const std::string& repo, Release& out, std::string& err) {
             const json::JVal* n = a.get("name");
             const json::JVal* u = a.get("browser_download_url");
             if (!n || !u) continue;
-            if (n->str == "RigSense.exe") {
+            if (n->str == "CoreHUD.exe") {
                 r.exeUrl = u->str;
                 const json::JVal* d = a.get("digest");   // GitHub: "sha256:<64 hex>"
                 if (d && d->t == json::JVal::Str && d->str.rfind("sha256:", 0) == 0 && d->str.size() == 7 + 64) {
@@ -208,22 +208,22 @@ bool FetchLatest(const std::string& repo, Release& out, std::string& err) {
 }
 
 bool Stage(const Release& r, std::string& err) {
-    if (r.exeUrl.empty()) { err = "release has no RigSense.exe (update manually from the release page)"; return false; }
+    if (r.exeUrl.empty()) { err = "release has no CoreHUD.exe (update manually from the release page)"; return false; }
     // expected hash: GitHub's own digest for the asset, else the release's SHA256SUMS.txt
     std::string expected = r.exeSha;
     if (expected.empty()) {
         if (r.sumsUrl.empty()) { err = "release has no checksum - not installed (update manually from the release page)"; return false; }
         std::vector<unsigned char> sums;
         if (!HttpsGet(r.sumsUrl, sums, err, 64 * 1024, false)) { err = "checksums: " + err; return false; }
-        expected = ExpectedSha(std::string(sums.begin(), sums.end()), "RigSense.exe");
+        expected = ExpectedSha(std::string(sums.begin(), sums.end()), "CoreHUD.exe");
     }
     std::vector<unsigned char> exe;
-    if (!HttpsGet(r.exeUrl, exe, err, 64 * 1024 * 1024, false)) { err = "RigSense.exe: " + err; return false; }
-    if (expected.size() != 64 || Sha256Hex(exe) != expected) { err = "RigSense.exe failed the SHA-256 check - not installed"; return false; }
+    if (!HttpsGet(r.exeUrl, exe, err, 64 * 1024 * 1024, false)) { err = "CoreHUD.exe: " + err; return false; }
+    if (expected.size() != 64 || Sha256Hex(exe) != expected) { err = "CoreHUD.exe failed the SHA-256 check - not installed"; return false; }
     if (!LooksLikeExe(exe)) { err = "downloaded file is not a valid program - not installed"; return false; }
     std::wstring dir = UpdateDir();
     CreateDirectoryW(dir.c_str(), nullptr);
-    if (!WriteFileAll(dir + L"\\RigSense.exe", exe)) { err = "cannot write to the RigSense folder (move RigSense to a folder you can write to, e.g. not Program Files)"; return false; }
+    if (!WriteFileAll(dir + L"\\CoreHUD.exe", exe)) { err = "cannot write to the CoreHUD folder (move CoreHUD to a folder you can write to, e.g. not Program Files)"; return false; }
     std::vector<unsigned char> ver(r.version.begin(), r.version.end());
     WriteFileAll(dir + L"\\version.txt", ver);
     return true;
@@ -236,7 +236,7 @@ bool IsStaged(const std::string& version) {
     char b[32] = {};
     size_t n = fread(b, 1, sizeof b - 1, f);
     fclose(f);
-    return std::string(b, n) == version && GetFileAttributesW((UpdateDir() + L"\\RigSense.exe").c_str()) != INVALID_FILE_ATTRIBUTES;
+    return std::string(b, n) == version && GetFileAttributesW((UpdateDir() + L"\\CoreHUD.exe").c_str()) != INVALID_FILE_ATTRIBUTES;
 }
 
 bool ApplyStaged(std::string& err) {
@@ -246,7 +246,7 @@ bool ApplyStaged(std::string& err) {
     std::wstring exe = self, old = exe + L".old";
     DeleteFileW(old.c_str());
     if (!MoveFileExW(exe.c_str(), old.c_str(), MOVEFILE_REPLACE_EXISTING)) { err = "cannot rename the running program (folder not writable?)"; return false; }
-    if (!MoveFileExW((up + L"\\RigSense.exe").c_str(), exe.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED)) {
+    if (!MoveFileExW((up + L"\\CoreHUD.exe").c_str(), exe.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED)) {
         MoveFileExW(old.c_str(), exe.c_str(), MOVEFILE_REPLACE_EXISTING);   // roll back
         err = "cannot move the new program into place";
         return false;
@@ -257,7 +257,7 @@ bool ApplyStaged(std::string& err) {
     STARTUPINFOW si{sizeof si};
     PROCESS_INFORMATION pi{};
     if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, dir.c_str(), &si, &pi)) {
-        MoveFileExW(exe.c_str(), (up + L"\\RigSense.exe").c_str(), MOVEFILE_REPLACE_EXISTING);
+        MoveFileExW(exe.c_str(), (up + L"\\CoreHUD.exe").c_str(), MOVEFILE_REPLACE_EXISTING);
         MoveFileExW(old.c_str(), exe.c_str(), MOVEFILE_REPLACE_EXISTING);
         err = "cannot start the new version";
         return false;
@@ -269,10 +269,10 @@ bool ApplyStaged(std::string& err) {
 
 void CleanupOld() {
     std::wstring dir = mon::ExeDir();
-    // just updated from 1.3.0 or older: the separate console exe is replaced by "RigSense.exe --cli"
-    if (GetFileAttributesW((dir + L"\\RigSense.exe.old").c_str()) != INVALID_FILE_ATTRIBUTES) DeleteFileW((dir + L"\\rigsense-cli.exe").c_str());
-    DeleteFileW((dir + L"\\RigSense.exe.old").c_str());
-    DeleteFileW((dir + L"\\rigsense-cli.exe.old").c_str());
+    // just updated from 1.3.0 or older: the separate console exe is replaced by "CoreHUD.exe --cli"
+    if (GetFileAttributesW((dir + L"\\CoreHUD.exe.old").c_str()) != INVALID_FILE_ATTRIBUTES) DeleteFileW((dir + L"\\corehud-cli.exe").c_str());
+    DeleteFileW((dir + L"\\CoreHUD.exe.old").c_str());
+    DeleteFileW((dir + L"\\corehud-cli.exe.old").c_str());
 }
 
 } // namespace upd

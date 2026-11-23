@@ -1,4 +1,4 @@
-// Tablet / phone panel: RigSense serves the sensor panel to any browser (old Android tablets, iPads, phones).
+// Tablet / phone panel: CoreHUD serves the sensor panel to any browser (old Android tablets, iPads, phones).
 //  - Wi-Fi: http://<pc-ip>:<port>/?k=<key>   (QR code in the app; the secret key keeps other devices out)
 //  - USB:   `adb reverse` maps the tablet's localhost:<port> to the PC, so no network is involved at all.
 // The PC renders the panel at the tablet's exact resolution and the page swaps in a JPEG twice per second.

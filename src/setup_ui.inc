@@ -42,8 +42,8 @@ void DrawSetupOverlay(float W, float H) {
     Fill(card, kSurface, 12);
     Stroke(card, kBorder, 12);
     Text(L"Components", R(x0 + 24, y0 + 16, cw - 48, 30), Fmt(19, 1), kInk);
-    Text(L"RigSense " RIGSENSE_VERSION L"  \u00b7  build " RIGSENSE_BUILD, R(x0 + 24, y0 + 16, cw - 48, 30), Fmt(12, 0, 2), kMuted);
-    Text(L"RigSense works on its own; these add data. Install what you want — “Install latest” uses winget (built into Windows).",
+    Text(L"CoreHUD " COREHUD_VERSION L"  \u00b7  build " COREHUD_BUILD, R(x0 + 24, y0 + 16, cw - 48, 30), Fmt(12, 0, 2), kMuted);
+    Text(L"CoreHUD works on its own; these add data. Install what you want — “Install latest” uses winget (built into Windows).",
          R(x0 + 24, y0 + 46, cw - 48, 20), Fmt(12.5f), kInk2);
     float y = y0 + 80;
     for (auto& c : g_comps) {
@@ -81,7 +81,7 @@ void DrawSetupOverlay(float W, float H) {
         btn(L"Download page", false, [cc] { comp::OpenUrl(cc.url); });
         if (!c.installed && g_winget && !c.wingetId.empty())
             btn(L"Install latest", true, [cc] {
-                if (!comp::InstallWithWinget(cc)) MessageBoxW(g_hwnd, L"Could not start winget.", L"RigSense", MB_ICONERROR);
+                if (!comp::InstallWithWinget(cc)) MessageBoxW(g_hwnd, L"Could not start winget.", L"CoreHUD", MB_ICONERROR);
             });
         if (c.installed && c.needsRunning && !c.running && !c.exePath.empty())
             btn(L"Start", true, [cc] { comp::Launch(cc); g_compsTick = 0; });

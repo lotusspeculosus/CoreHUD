@@ -1,4 +1,4 @@
-# Builds RigSense with MSVC on Windows and runs the unit tests for every push and pull request,
+# Builds CoreHUD with MSVC on Windows and runs the unit tests for every push and pull request,
 # so fixes (including ones Claude proposes) are compiled and tested before they're merged.
 name: Build & test
 
@@ -25,5 +25,5 @@ jobs:
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
-          name: RigSense-${{ github.sha }}
-          path: bin/RigSense.exe
+          name: CoreHUD-${{ github.sha }}
+          path: bin/CoreHUD.exe

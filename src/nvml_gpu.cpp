@@ -42,7 +42,7 @@ template <typename T> void Load(T& fn, const char* name) {
 
 bool Init(std::string& err) {
     if (g_dll) return true;
-    if (getenv("RIGSENSE_SIMULATE_NO_NVIDIA")) { err = "simulated: no NVIDIA driver"; return false; }
+    if (getenv("COREHUD_SIMULATE_NO_NVIDIA")) { err = "simulated: no NVIDIA driver"; return false; }
     g_dll = LoadLibraryExW(L"nvml.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (!g_dll) {
         wchar_t path[MAX_PATH];

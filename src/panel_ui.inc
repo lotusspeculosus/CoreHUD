@@ -243,7 +243,7 @@ void IdentifyDisplays() {
         const RECT& r = g_mons[i].rc;
         int mw = r.right - r.left, mh = r.bottom - r.top;
         int h = std::clamp(mh * 45 / 100, 120, 420), w = std::min(mw - 20, h * 16 / 10);
-        HWND wnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"RigSenseIdentify", L"", WS_POPUP,
+        HWND wnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"CoreHUDIdentify", L"", WS_POPUP,
                                    r.left + (mw - w) / 2, r.top + (mh - h) / 2, w, h, nullptr, nullptr, inst, nullptr);
         if (!wnd) continue;
         SetWindowLongPtrW(wnd, GWLP_USERDATA, LONG_PTR(i));
@@ -729,7 +729,7 @@ int NextSlotId() {
 // New layout (empty starter or a copy of the current one) - it opens in the editor.
 void AddSlot(const panel::Layout* copyOf, const std::wstring& name) {
     if (g_slots.size() >= kMaxSlots) {
-        MessageBoxW(g_hwnd, F(L"You can have up to %zu layouts. Delete one first.", kMaxSlots).c_str(), L"RigSense", MB_ICONINFORMATION);
+        MessageBoxW(g_hwnd, F(L"You can have up to %zu layouts. Delete one first.", kMaxSlots).c_str(), L"CoreHUD", MB_ICONINFORMATION);
         return;
     }
     SaveLayout();
@@ -756,12 +756,12 @@ void AddSlot(const panel::Layout* copyOf, const std::wstring& name) {
 
 void DeleteEditSlot() {
     if (g_slots.size() <= 1) {
-        MessageBoxW(g_hwnd, L"This is your only layout - it can't be deleted. Use “Reset layout” to start over.", L"RigSense", MB_ICONINFORMATION);
+        MessageBoxW(g_hwnd, L"This is your only layout - it can't be deleted. Use “Reset layout” to start over.", L"CoreHUD", MB_ICONINFORMATION);
         return;
     }
     Slot& s = EditSlot();
     if (MessageBoxW(g_hwnd, (L"Delete the layout “" + SlotName(s) + L"”?\n\nIt is moved to layouts\\deleted, so you can still get it back.").c_str(),
-                    L"RigSense", MB_OKCANCEL | MB_ICONQUESTION) != IDOK)
+                    L"CoreHUD", MB_OKCANCEL | MB_ICONQUESTION) != IDOK)
         return;
     CommitFocus();
     g_focus = 0;
@@ -860,7 +860,7 @@ void PanelFullMessage() {
     MessageBoxW(g_hwnd,
                 L"There is no free space left on the panel.\n\nMake room first: select a widget and make it smaller (drag its corner), "
                 L"delete one, or add columns/rows with the Grid buttons.",
-                L"RigSense", MB_ICONINFORMATION);
+                L"CoreHUD", MB_ICONINFORMATION);
 }
 
 void AddWidget(panel::WType t, const std::string& sensor = "") {
@@ -923,7 +923,7 @@ void ExportPanel() {
     wchar_t file[MAX_PATH] = L"my-panel.rigpanel";
     OPENFILENAMEW of{sizeof of};
     of.hwndOwner = g_hwnd;
-    of.lpstrFilter = L"RigSense panel (*.rigpanel)\0*.rigpanel\0";
+    of.lpstrFilter = L"CoreHUD panel (*.rigpanel)\0*.rigpanel\0";
     of.lpstrDefExt = L"rigpanel";
     of.lpstrFile = file;
     of.nMaxFile = MAX_PATH;
@@ -933,15 +933,15 @@ void ExportPanel() {
         MessageBoxW(g_hwnd, (std::wstring(L"Panel exported to\n") + file +
                              L"\n\nShare this file; others can load it with “Import panel”. The background image is included.\n"
                              L"Note: HWiNFO / LibreHardwareMonitor sensors only match on PCs with the same hardware.").c_str(),
-                    L"RigSense", MB_ICONINFORMATION);
-    else MessageBoxW(g_hwnd, L"Could not write the file.", L"RigSense", MB_ICONERROR);
+                    L"CoreHUD", MB_ICONINFORMATION);
+    else MessageBoxW(g_hwnd, L"Could not write the file.", L"CoreHUD", MB_ICONERROR);
 }
 
 void ImportPanel() {
     wchar_t file[MAX_PATH] = {};
     OPENFILENAMEW of{sizeof of};
     of.hwndOwner = g_hwnd;
-    of.lpstrFilter = L"RigSense panel (*.rigpanel)\0*.rigpanel\0Layout text (*.txt)\0*.txt\0All files\0*.*\0";
+    of.lpstrFilter = L"CoreHUD panel (*.rigpanel)\0*.rigpanel\0Layout text (*.txt)\0*.txt\0All files\0*.*\0";
     of.lpstrFile = file;
     of.nMaxFile = MAX_PATH;
     of.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
@@ -949,7 +949,7 @@ void ImportPanel() {
     panel::Layout l;
     std::wstring err;
     if (!panel::Import(file, l, mon::ExeDir() + L"\\panel_images", err)) {
-        MessageBoxW(g_hwnd, err.c_str(), L"RigSense", MB_ICONERROR);
+        MessageBoxW(g_hwnd, err.c_str(), L"CoreHUD", MB_ICONERROR);
         return;
     }
     int missing = 0;
@@ -968,7 +968,7 @@ void ImportPanel() {
     if (g_slots.size() == before) return;
     if (missing)
         MessageBoxW(g_hwnd, F(L"Imported as a new layout. %d widget(s) use sensors this PC doesn't have (or whose source isn't running) - select them and pick a sensor from the list.", missing).c_str(),
-                    L"RigSense", MB_ICONINFORMATION);
+                    L"CoreHUD", MB_ICONINFORMATION);
 }
 
 // The layout strip above the preview: one chip per layout (where it's showing), New / Duplicate / Delete, and the name.
@@ -1646,11 +1646,11 @@ void ShowPanel(Slot& s, bool on) {
         for (auto& o : g_slots)
             if (o.get() != &s && o->wnd && !o->virt && LayoutOf(*o).display == mon->dev) mon = nullptr;
     HINSTANCE inst = GetModuleHandleW(nullptr);
-    std::wstring title = L"RigSense · " + SlotName(s);
+    std::wstring title = L"CoreHUD · " + SlotName(s);
     if (mon && !mon->primary) {
         // Real panel: borderless fullscreen on that display, no taskbar button, never steals focus.
         s.virt = false;
-        s.wnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"RigSensePanelWnd", title.c_str(), WS_POPUP, mon->rc.left, mon->rc.top,
+        s.wnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"CoreHUDPanelWnd", title.c_str(), WS_POPUP, mon->rc.left, mon->rc.top,
                                 mon->rc.right - mon->rc.left, mon->rc.bottom - mon->rc.top, nullptr, nullptr, inst, &s);
     } else {
         // Virtual panel: a floating device-like window at the panel's real pixel size (scaled down if it doesn't fit).
@@ -1662,7 +1662,7 @@ void ShowPanel(Slot& s, bool on) {
         int open = 0;   // cascade several virtual panels instead of stacking them exactly
         for (auto& o : g_slots) open += o.get() != &s && o->wnd && o->virt;
         int off = (open % 6) * 36;
-        s.wnd = CreateWindowExW(WS_EX_APPWINDOW | (s.virtTop ? WS_EX_TOPMOST : 0), L"RigSensePanelWnd", title.c_str(), WS_POPUP,
+        s.wnd = CreateWindowExW(WS_EX_APPWINDOW | (s.virtTop ? WS_EX_TOPMOST : 0), L"CoreHUDPanelWnd", title.c_str(), WS_POPUP,
                                 wa.left + (wa.right - wa.left - sz.cx) / 2 + off, wa.top + (wa.bottom - wa.top - sz.cy) / 2 + off, sz.cx, sz.cy,
                                 nullptr, nullptr, inst, &s);
         if (s.wnd) {

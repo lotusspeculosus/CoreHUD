@@ -44,7 +44,7 @@ static void WriteAll(const std::wstring& p, const std::string& s) {
 int main() {
     wchar_t tmp[MAX_PATH];
     GetTempPathW(MAX_PATH, tmp);
-    std::wstring dir = std::wstring(tmp) + L"rigsense_test";
+    std::wstring dir = std::wstring(tmp) + L"corehud_test";
     CreateDirectoryW(dir.c_str(), nullptr);
 
     // 1. default layout round-trip

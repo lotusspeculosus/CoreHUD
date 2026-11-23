@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include "../src/updater.h"
+#include "../src/version.h"
 
 static int g_fail = 0, g_pass = 0;
 #define CHECK(c) do { if (c) ++g_pass; else { ++g_fail; printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #c); } } while (0)
@@ -10,6 +11,12 @@ static int g_fail = 0, g_pass = 0;
 static std::vector<unsigned char> Bytes(const std::string& s) { return std::vector<unsigned char>(s.begin(), s.end()); }
 
 int main() {
+    // version.h: the string and the numbers (Windows file version) must agree
+    {
+        char v[32];
+        snprintf(v, sizeof v, "%d.%d.%d", COREHUD_VER_MAJOR, COREHUD_VER_MINOR, COREHUD_VER_PATCH);
+        CHECK(std::string(v) == COREHUD_VERSION_STR);
+    }
     // versions
     CHECK(upd::CompareVersions("1.2.0", "1.2.0") == 0);
     CHECK(upd::CompareVersions("v1.2.0", "1.2.0") == 0);
@@ -28,19 +35,19 @@ int main() {
 
     // SHA256SUMS.txt parsing
     std::string sums =
-        "3F65D25985BC9F0C30C0B36C3804C4371EA6DD0869D3E8AD63BF38016A3FE4AE  RigSense-1.2.0-win64.zip\r\n"
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  RigSense.exe.old\n"
-        "2EA77E9DEF81698932D4A6191EE91B3F1DD9BE9405936C7BE9693A4997077DED *RigSense.exe\n"
-        "notahash  rigsense-cli.exe\n"
-        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  rigsense-cli.exe   \n";
-    CHECK(upd::ExpectedSha(sums, "RigSense.exe") == "2ea77e9def81698932d4a6191ee91b3f1dd9be9405936c7be9693a4997077ded");
-    CHECK(upd::ExpectedSha(sums, "rigsense-cli.exe") == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        "3F65D25985BC9F0C30C0B36C3804C4371EA6DD0869D3E8AD63BF38016A3FE4AE  CoreHUD-1.2.0-win64.zip\r\n"
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  CoreHUD.exe.old\n"
+        "2EA77E9DEF81698932D4A6191EE91B3F1DD9BE9405936C7BE9693A4997077DED *CoreHUD.exe\n"
+        "notahash  corehud-cli.exe\n"
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  corehud-cli.exe   \n";
+    CHECK(upd::ExpectedSha(sums, "CoreHUD.exe") == "2ea77e9def81698932d4a6191ee91b3f1dd9be9405936c7be9693a4997077ded");
+    CHECK(upd::ExpectedSha(sums, "corehud-cli.exe") == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
     CHECK(upd::ExpectedSha(sums, "missing.exe").empty());
-    CHECK(upd::ExpectedSha("", "RigSense.exe").empty());
+    CHECK(upd::ExpectedSha("", "CoreHUD.exe").empty());
     // malformed lines (hash with no file name) must be skipped, not crash
-    CHECK(upd::ExpectedSha("2ea77e9def81698932d4a6191ee91b3f1dd9be9405936c7be9693a4997077ded *\n", "RigSense.exe").empty());
+    CHECK(upd::ExpectedSha("2ea77e9def81698932d4a6191ee91b3f1dd9be9405936c7be9693a4997077ded *\n", "CoreHUD.exe").empty());
     CHECK(upd::ExpectedSha("2ea77e9def81698932d4a6191ee91b3f1dd9be9405936c7be9693a4997077ded \t*\r\n"
-                           "2ea77e9def81698932d4a6191ee91b3f1dd9be9405936c7be9693a4997077ded  RigSense.exe\n", "RigSense.exe") ==
+                           "2ea77e9def81698932d4a6191ee91b3f1dd9be9405936c7be9693a4997077ded  CoreHUD.exe\n", "CoreHUD.exe") ==
           "2ea77e9def81698932d4a6191ee91b3f1dd9be9405936c7be9693a4997077ded");
 
     printf("\nupdate: %d passed, %d failed\n", g_pass, g_fail);

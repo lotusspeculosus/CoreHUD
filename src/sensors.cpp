@@ -337,7 +337,7 @@ bool Registry::LhmViaWmi(std::vector<LhmItem>& out) {
 bool Registry::LhmViaHttp(std::vector<LhmItem>& out, int port) {
     DWORD now = GetTickCount();
     if (lhmHttpFailTick_ && now - lhmHttpFailTick_ < 5000) return false;   // not running: don't knock every sample
-    if (!http_) http_ = WinHttpOpen(L"RigSense", WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!http_) http_ = WinHttpOpen(L"CoreHUD", WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!http_) return false;
     WinHttpSetTimeouts(http_, 300, 300, 500, 1500);
     std::string body;
@@ -496,7 +496,7 @@ void Registry::Update(const mon::Snapshot& s) {
 
 // AMD / Intel GPUs: Windows counters give load, VRAM, temperature, fan and power %. When LibreHardwareMonitor
 // runs (it reads AMD ADL / Intel IGCL itself), fill in what Windows can't: core clock, hotspot, VRAM temp,
-// core voltage, board power in watts, fan duty. Values RigSense already has stay as they are.
+// core voltage, board power in watts, fan duty. Values CoreHUD already has stay as they are.
 void Registry::EnrichGpuFromLhm() {
     gpuFromLhm = false;
     if (!gpuViaWindows || lhmGpu_.empty()) return;

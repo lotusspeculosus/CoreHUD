@@ -1,7 +1,7 @@
-// Settings window (replaces editing RigSense.ini in Notepad) + auto-update state machine.
+// Settings window (replaces editing CoreHUD.ini in Notepad) + auto-update state machine.
 // Included inside app.cpp's anonymous namespace (after panel_ui.inc / setup_ui.inc).
 
-constexpr const char* kRepo = "lotusspeculosus/RigSense";
+constexpr const char* kRepo = "lotusspeculosus/CoreHUD";
 constexpr UINT WM_APP_UPDATE = WM_APP + 4;
 constexpr UINT_PTR TIMER_UPDATE = 7;
 
@@ -43,7 +43,7 @@ void StartUpdateCheck(bool install) {
         res->install = install;
         res->ok = upd::FetchLatest(kRepo, res->rel, res->err);
         if (res->ok) {
-            res->newer = upd::CompareVersions(res->rel.version, RIGSENSE_VERSION_STR) > 0;
+            res->newer = upd::CompareVersions(res->rel.version, COREHUD_VERSION_STR) > 0;
             if (res->newer && (install || mode == upd::MODE_AUTO)) {
                 if (upd::IsStaged(res->rel.version)) res->staged = true;
                 else {
@@ -69,7 +69,7 @@ void TryApplyUpdate() {
     if (PinCritical()) { g_upd.msg = L"Update ready - waiting until the connector alert clears"; return; }   // never restart mid-alarm
     g_upd.applyPending = false;
     std::string err;
-    mon::LogEvent(0, L"Installing RigSense " + Wide(g_upd.rel.version) + L" and restarting");
+    mon::LogEvent(0, L"Installing CoreHUD " + Wide(g_upd.rel.version) + L" and restarting");
     if (upd::ApplyStaged(err)) {
         PostMessageW(g_hwnd, WM_CLOSE, 0, 0);   // the new version is starting
     } else {
@@ -101,7 +101,7 @@ void OnUpdateResult(UpdResult* res) {
             g_upd.msg = L"Version " + Wide(res->rel.version) + L" is available";
             if (g_upd.notifiedVersion != res->rel.version) {
                 g_upd.notifiedVersion = res->rel.version;
-                TrayNotify(1, L"RigSense " + Wide(res->rel.version) + L" is available - open Settings to install it.");
+                TrayNotify(1, L"CoreHUD " + Wide(res->rel.version) + L" is available - open Settings to install it.");
             }
         }
     }
@@ -126,7 +126,7 @@ bool CopyText(const std::wstring& w) {
 }
 
 std::wstring BuildDiagnostics() {
-    std::wstring t = L"RigSense " RIGSENSE_VERSION L" (build " RIGSENSE_BUILD L")\r\n";
+    std::wstring t = L"CoreHUD " COREHUD_VERSION L" (build " COREHUD_BUILD L")\r\n";
     using RtlGetVersion_t = LONG(WINAPI*)(OSVERSIONINFOW*);
     OSVERSIONINFOW ov{sizeof ov};
     if (auto f = reinterpret_cast<RtlGetVersion_t>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion"))) f(&ov);
@@ -143,6 +143,7 @@ std::wstring BuildDiagnostics() {
         for (int i = 0; i < g_snap.pinCount; ++i) t += F(L"  P%d %.2fA %.3fV", i + 1, g_snap.amps[i], g_snap.volts[i]);
         t += L"\r\n";
     }
+    t += L"Power connector: " + std::wstring(conn::Name(g_conn.layout)) + (g_conn.how.empty() ? L"" : L" (" + g_conn.how + L")") + L"\r\n";
     t += F(L"Limits: warn %.1f A, limit %.1f A, spread %.1f A, critical action %s\r\n", g_snap.cfg.warnA, g_snap.cfg.limitA,
            g_snap.cfg.spreadWarnA, g_snap.cfg.criticalAction ? L"shutdown" : L"notify");
     t += L"LibreHardwareMonitor: " + std::wstring(g_reg.lhmOk ? F(L"%d sensors via %s", g_reg.lhmCount, g_reg.lhmVia.c_str()) :
@@ -168,6 +169,7 @@ bool g_settingsOpen = false;
 struct SettingsDraft {
     std::wstring warnA, limitA, spreadA, critSec, pollMs, lhmPort, gpuIndex, i2cPort, i2cAddr;
     int critAction = 0, updMode = upd::MODE_AUTO;
+    conn::Layout connector = conn::UNKNOWN;
     bool beep = true, csv = false, force = false, showComponents = true;
     bool blackBox = true, wear = true, alarmPanels = true, alarmSound = true;
     std::string pinSource = "auto";
@@ -198,6 +200,7 @@ void OpenSettings() {
     g_draft.alarmSound = g_alarmTabletSound;
     g_draft.showComponents = SetupShowAtStart();
     g_draft.updMode = UpdateMode();
+    g_draft.connector = g_connChoice;
     g_settingsOpen = true;
     InvalidateRect(g_hwnd, nullptr, FALSE);
 }
@@ -242,6 +245,9 @@ void SaveSettings() {
     put(L"Alarm", L"TabletSound", g_draft.alarmSound ? L"1" : L"0");
     LoadAlarmCfg();
     put(L"Sensor", L"PinSource", Wide(g_draft.pinSource));
+    put(L"Gpu", L"Connector", conn::Id(g_draft.connector));
+    g_connChoice = g_draft.connector;
+    g_conn = conn::Effective(g_connDetected, g_connChoice);
     put(L"Sensor", L"LhmPort", g_draft.lhmPort);
     put(L"Sensor", L"GpuIndex", g_draft.gpuIndex);
     put(L"Sensor", L"I2CPort", g_draft.i2cPort);
@@ -262,7 +268,7 @@ void DrawSettingsOverlay(float W, float H) {
     Fill(card, kSurface, 12);
     Stroke(card, kBorder, 12);
     Text(L"Settings", R(x0 + 24, y0 + 16, 300, 30), Fmt(19, 1), kInk);
-    Text(L"RigSense " RIGSENSE_VERSION L"  ·  build " RIGSENSE_BUILD, R(x0 + 24, y0 + 16, cw - 48, 30), Fmt(12, 0, 2), kMuted);
+    Text(L"CoreHUD " COREHUD_VERSION L"  ·  build " COREHUD_BUILD, R(x0 + 24, y0 + 16, cw - 48, 30), Fmt(12, 0, 2), kMuted);
 
     const float rowH = ch < 690 ? 31.f : 34.f, ctl = rowH - 6, lab = 210;
     float colW = (cw - 72) / 2;
@@ -325,7 +331,7 @@ void DrawSettingsOverlay(float W, float H) {
     toggleBtn(L"Connector wear check", g_draft.wear, L"New cable…", [] {
         if (MessageBoxW(g_hwnd, L"Start learning the pin balance again?\n\nDo this after you replaced the 12V-2x6 cable or reseated the connector, "
                                 L"so the wear check compares against the new situation. (The old history is kept as a .old file.)",
-                        L"RigSense", MB_OKCANCEL | MB_ICONQUESTION) == IDOK)
+                        L"CoreHUD", MB_OKCANCEL | MB_ICONQUESTION) == IDOK)
             mon::ResetWear();
     }, 104);
     yl += 8;
@@ -336,7 +342,22 @@ void DrawSettingsOverlay(float W, float H) {
 
     // ----- right column -----
     float xr = x0 + 48 + colW, yr = y0 + 62;
-    section(xr, yr, L"Per-pin source");
+    section(xr, yr, L"Power connector & per-pin source");
+    {   // the card's connector: auto (from power-rail telemetry) or set by hand
+        const conn::Layout ls[] = {conn::UNKNOWN, conn::HPWR16, conn::PCIE8_1, conn::PCIE8_2, conn::PCIE8_3, conn::NONE};
+        const wchar_t* names[] = {L"Auto", L"12V-2x6", L"1× 8-pin", L"2× 8-pin", L"3× 8-pin", L"None"};
+        float bw = (colW - 5 * 6) / 6;
+        for (int i = 0; i < 6; ++i) {
+            conn::Layout l = ls[i];
+            Btn(R(xr + i * (bw + 6), yr, bw, ctl), names[i], g_draft.connector == l, [l] { g_draft.connector = l; }, 11.5f);
+        }
+        yr += rowH;
+        std::wstring det = g_connDetected.layout != conn::UNKNOWN
+                               ? L"Detected: " + std::wstring(conn::Name(g_connDetected.layout)) + L" (" + g_connDetected.how + L")"
+                               : L"Not detected: your card or tools don't report it. Pick yours (look where the cable plugs into the card).";
+        Text(det, R(xr, yr - 4, colW, 18), Fmt(FitSize(det, 0, 11.5f, colW), 0), g_connDetected.layout != conn::UNKNOWN ? kInk2 : kMuted);
+        yr += 22;
+    }
     {
         const char* ids[] = {"auto", "astral", "wireview", "pmd2x", "msipsu", "off"};
         const wchar_t* names[] = {L"Auto", L"On-card", L"WireView", L"PMD2X", L"MSI PSU", L"Off"};
@@ -353,8 +374,13 @@ void DrawSettingsOverlay(float W, float H) {
     yr += 8;
     section(xr, yr, L"On-card sensor (advanced)");
     numField(xr, yr, L"GPU index (-1 = auto)", SF_GPUIDX, g_draft.gpuIndex, nullptr);
-    numField(xr, yr, L"I2C port", SF_I2CPORT, g_draft.i2cPort, nullptr);
-    numField(xr, yr, L"I2C address", SF_I2CADDR, g_draft.i2cAddr, L"(default 0x2B)");
+    {   // port + address on one row
+        float cx = label(xr, yr, L"I2C port / address");
+        if (TextField(R(cx, yr, 60, ctl), SF_I2CPORT, g_draft.i2cPort, L"", tmp)) g_draft.i2cPort = tmp;
+        if (TextField(R(cx + 68, yr, 90, ctl), SF_I2CADDR, g_draft.i2cAddr, L"", tmp)) g_draft.i2cAddr = tmp;
+        Text(L"(default 1 / 0x2B)", R(cx + 166, yr, 130, ctl), Fmt(12), kMuted);
+        yr += rowH;
+    }
     toggle(xr, yr, L"Force on unknown cards", g_draft.force);
     yr += 8;
     section(xr, yr, L"Updates");
@@ -389,13 +415,13 @@ void DrawSettingsOverlay(float W, float H) {
         Btn(R(xr + (bw + 6), yr, bw, ctl), L"Copy diagnostics", false, [] {
             if (CopyText(BuildDiagnostics()))
                 MessageBoxW(g_hwnd, L"Diagnostic info copied to the clipboard.\n\nPaste it into your GitHub issue (Ctrl+V). It contains your hardware and "
-                                    L"sensor readings, nothing personal.", L"RigSense", MB_ICONINFORMATION);
+                                    L"sensor readings, nothing personal.", L"CoreHUD", MB_ICONINFORMATION);
             else
-                MessageBoxW(g_hwnd, L"Couldn't open the clipboard (another program is using it). Please try again.", L"RigSense", MB_ICONWARNING);
+                MessageBoxW(g_hwnd, L"Couldn't open the clipboard (another program is using it). Please try again.", L"CoreHUD", MB_ICONWARNING);
         }, 12.f);
         Btn(R(xr + 2 * (bw + 6), yr, bw, ctl), L"GitHub page", false,
-            [] { ShellExecuteW(g_hwnd, L"open", L"https://github.com/lotusspeculosus/RigSense", nullptr, nullptr, SW_SHOWNORMAL); });
-        Btn(R(xr + 3 * (bw + 6), yr, bw, ctl), L"RigSense.ini", false,
+            [] { ShellExecuteW(g_hwnd, L"open", L"https://github.com/lotusspeculosus/CoreHUD", nullptr, nullptr, SW_SHOWNORMAL); });
+        Btn(R(xr + 3 * (bw + 6), yr, bw, ctl), L"CoreHUD.ini", false,
             [] { ShellExecuteW(g_hwnd, L"open", L"notepad.exe", (L"\"" + g_ini + L"\"").c_str(), nullptr, SW_SHOWNORMAL); });
     }
 

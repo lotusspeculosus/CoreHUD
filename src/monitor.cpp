@@ -69,7 +69,7 @@ struct Csv {
         SYSTEMTIME st;
         GetLocalTime(&st);
         wchar_t name[64];
-        swprintf(name, 64, L"\\rigsense_%04u%02u%02u_%02u%02u%02u.csv", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+        swprintf(name, 64, L"\\corehud_%04u%02u%02u_%02u%02u%02u.csv", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
         path = dir + name;
         f = _wfopen(path.c_str(), L"w");
         if (!f) { path.clear(); return; }
@@ -311,7 +311,7 @@ void ThreadMain(Config cfg) {
             if (critActive && cfg.criticalAction == 1 && !shutdownIssued &&
                 clock::now() - critSince >= std::chrono::seconds(cfg.criticalSeconds)) {
                 shutdownIssued = true;
-                wchar_t cmd[] = L"shutdown.exe /s /t 60 /c \"RigSense: a 12V-2x6 pin stayed above its current limit. "
+                wchar_t cmd[] = L"shutdown.exe /s /t 60 /c \"CoreHUD: a 12V-2x6 pin stayed above its current limit. "
                                 L"Shutting down in 60 s to protect the connector. Run 'shutdown /a' to cancel.\"";
                 STARTUPINFOW si{sizeof si};
                 PROCESS_INFORMATION pi{};
@@ -437,14 +437,14 @@ std::wstring ExeDir() {
     return s.substr(0, s.find_last_of(L"\\/"));
 }
 
-std::wstring DefaultIniPath() { return ExeDir() + L"\\RigSense.ini"; }
+std::wstring DefaultIniPath() { return ExeDir() + L"\\CoreHUD.ini"; }
 std::wstring BlackBoxDir() { return ExeDir() + L"\\logs\\blackbox"; }
 
 Config LoadConfig(const std::wstring& ini) {
     if (GetFileAttributesW(ini.c_str()) == INVALID_FILE_ATTRIBUTES) {
         FILE* f = _wfopen(ini.c_str(), L"w");
         if (f) {
-            fputs("; RigSense settings. Press \"Restart sensor\" in the app after editing.\n"
+            fputs("; CoreHUD settings. Press \"Restart sensor\" in the app after editing.\n"
                   "[Monitor]\n"
                   "; sample interval in milliseconds (min 100)\n"
                   "PollMs=500\n"

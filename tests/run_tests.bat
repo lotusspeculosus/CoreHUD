@@ -17,4 +17,6 @@ cl %TFLAGS% tests\test_update.cpp src\updater.cpp %MONSRC% /Fe:build\tests\test_
 build\tests\test_update.exe || exit /b 1
 cl %TFLAGS% tests\test_history.cpp src\wear.cpp src\blackbox.cpp /Fe:build\tests\test_history.exe /link advapi32.lib >nul || (echo BUILD FAILED & exit /b 1)
 build\tests\test_history.exe || exit /b 1
+cl %TFLAGS% tests\test_connector.cpp src\connector.cpp /Fe:build\tests\test_connector.exe >nul || (echo BUILD FAILED & exit /b 1)
+build\tests\test_connector.exe || exit /b 1
 build\tests\test_panel.exe
