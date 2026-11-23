@@ -4,7 +4,7 @@
 
 CoreHUD is a single small native app (C++, Win32 + Direct2D), not a web or Electron app. It sends no telemetry and doesn't need an account. You can design your own sensor panel for any case screen, or run it as a virtual panel on your desktop.
 
-![Virtual sensor panel](docs/screenshots/virtual-panel.png)
+![CoreHUD demo: a live sensor panel with per-pin 12V-2x6 readings, resizing a widget in the designer, and the red connector alarm](docs/screenshots/demo.gif)
 
 ---
 
@@ -42,8 +42,10 @@ CoreHUD is a single small native app (C++, Win32 + Direct2D), not a web or Elect
 | ![Dashboard](docs/screenshots/dashboard.png) | ![Panel editor](docs/screenshots/panel-editor.png) |
 | **Performance chart** | **Component check** |
 | ![Chart](docs/screenshots/chart.png) | ![Components](docs/screenshots/components.png) |
-| **Alarm on every screen** (Settings → Test alarm, on a 1920×480 bar) | **Guided tour** |
+| **Alarm on every screen** (Settings → Test alarm) | **Guided tour** |
 | ![Connector alarm](docs/screenshots/alarm.png) | ![Guided tour](docs/screenshots/tour.png) |
+| **Virtual panel** (a 1920×480 case-bar layout as a floating window) | **Tablet / phone panel** |
+| ![Virtual sensor panel](docs/screenshots/virtual-panel.png) | ![Tablet dialog](docs/screenshots/tablet.png) |
 
 ---
 
@@ -223,7 +225,8 @@ Settings (`[Tablet]` in `CoreHUD.ini`): `Mode` = `off` / `usb` / `wifi` (USB + W
 **1.5.0**
 - **New name: CoreHUD** (the program, its settings file `CoreHUD.ini`, and the GitHub repository).
 - **Power connector detection:** 12V-2x6 or 1–3× 8-pin PCIe, read from the card's power-rail telemetry or its per-pin sensor, with a manual choice in **Settings → Power connector**. Cards with 8-pin connectors get a connector view with the power per 8-pin input (when reported) instead of the pin chart, the *Connector power* card sums the 8-pin inputs, and the guided tour explains the connector your card actually has.
-- The Windows file version now matches the release version.
+- **Settings → Test alarm** now shows exactly what a real alarm looks like (an example pin reading, labelled as a test), on every panel and the tablet.
+- The Windows file version now matches the release version. New demo GIF and screenshots.
 
 **1.4.0**
 - **Layouts ("save slots"):** keep as many sensor panel layouts as you like, each with its own display. Several can be open at once (one fullscreen per display plus floating windows), and the tablet shows its own chosen layout. New / Duplicate / rename / Delete (to `layouts\deleted`) in the editor. Import adds a new layout and never overwrites. Your existing panel moves in automatically as "My panel".

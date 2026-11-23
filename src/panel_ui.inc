@@ -622,10 +622,10 @@ void DrawAlarmOverlay(float W, float H) {
                            : F(L"Connector 2 pin %d: %.2f A  (limit %.1f A)", worst - 5, g_snap.amps[worst], g_snap.cfg.limitA);
         if (n > 1) detail += F(L"  ·  %d pins over", n);
         hint = L"Lower the GPU load now — then check the connector";
-    } else {
-        title = L"TEST ALARM";
-        detail = L"This is how a connector alarm looks on this screen";
-        hint = L"It disappears by itself in a few seconds";
+    } else {   // test: exactly what a real alarm looks like, with an example reading, marked as a test
+        title = L"⚠ 12V-2x6 OVER LIMIT";
+        detail = F(L"Pin 3: %.2f A  (limit %.1f A)", g_snap.cfg.limitA + 0.42, g_snap.cfg.limitA);
+        hint = L"TEST ALARM — example reading, it disappears by itself in a few seconds";
     }
     float bw = W * 0.86f, bh = std::min(H * 0.8f, std::max(H * 0.5f, bw * 0.28f));
     D2D1_RECT_F box = D2D1::RectF((W - bw) / 2, (H - bh) / 2, (W + bw) / 2, (H + bh) / 2);
