@@ -55,7 +55,7 @@ CoreHUD is a single small native app (C++, Win32 + Direct2D), not a web or Elect
 2. Put it in its own folder, for example `C:\Tools\CoreHUD`. Settings, layouts and logs are saved next to it.
 3. Run it. It needs no installer and no admin rights.
 
-> Windows SmartScreen may warn because the exe isn't code-signed. Click **More info → Run anyway**, or build the exe yourself from the source (see below).
+> Windows SmartScreen may warn because the exe isn't code-signed yet. Click **More info → Run anyway**, or build the exe yourself from the source (see below). Code signing is being set up through the SignPath Foundation, which signs open-source projects for free: see the [**Code signing policy**](CODE_SIGNING_POLICY.md), which also explains exactly which network connections CoreHUD makes.
 
 **Requirements:** Windows 10 (version 2004 or newer) or Windows 11, 64-bit, and a working GPU driver.
 
@@ -175,7 +175,7 @@ CoreHUD.exe --cli --sensors > sensors.txt
 
 If you own a WireView Pro II, PMD2X or MSI Ai1300TS/Ai1600TS, please run `CoreHUD.exe --cli --meters | more` and open an issue with the output (working or not). That's how these sources move from experimental to verified.
 
-**Releasing (maintainers):** bump the numbers in `src/version.h`, build, then publish a GitHub release tagged `vX.Y.Z` with two assets: `CoreHUD.exe` and `SHA256SUMS.txt` (`<sha256>  CoreHUD.exe`, the fallback when GitHub doesn't report a digest). Installed copies pick it up automatically. `tests\test_update.cpp` checks that the version string and numbers in `version.h` agree.
+**Releasing (maintainers):** bump the numbers in `src/version.h` (`tests\test_update.cpp` checks that the string and the numbers agree), add the changelog entry, commit and push, then push a tag: `git tag vX.Y.Z && git push origin vX.Y.Z`. The [Release workflow](.github/workflows/release.yml) builds and tests on GitHub, gets `CoreHUD.exe` signed through SignPath (approve the signing request in SignPath), verifies the signature, and publishes the release with `CoreHUD.exe` and `SHA256SUMS.txt`. Installed copies pick it up automatically. It never publishes an unsigned exe; until signing is set up (secret `SIGNPATH_API_TOKEN`, variables `SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_PROJECT_SLUG`, `SIGNPATH_POLICY_SLUG`), releases are made by hand: build, then `gh release create vX.Y.Z bin\CoreHUD.exe SHA256SUMS.txt`. See the [Code signing policy](CODE_SIGNING_POLICY.md).
 
 ### How the per-pin sensor is read
 
