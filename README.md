@@ -18,7 +18,10 @@ RigSense is a single small native app (C++, Win32 + Direct2D), not a web or Elec
   - Per-widget colour, background style, text size, label, range, warning/critical levels, decimals, and graph history length.
   - Panel background colour or image, grid, spacing and corner radius.
 - **Virtual panel.** No case screen yet? Open the panel as a floating "device" window at its real pixel size. Drag it around, scroll to resize, and pin it on top.
-- **Real panel output.** Pick the case display under **Show on** and the panel runs fullscreen on it. Any panel that Windows sees as a monitor works (HDMI, DisplayPort or USB-C).
+- **Real panel output, one size fits all.** Any panel that Windows sees as a monitor works (HDMI, DisplayPort or USB-C):
+  - **Drag and drop:** drag the virtual panel onto your case display and let go. It goes fullscreen there and adopts that display's resolution. If the display's shape differs a lot from your design, the grid rescales and keeps your arrangement.
+  - **Pick it directly:** choose the display under **Show on**. Monitors are listed by name and resolution, and **Identify** shows a big number on each screen.
+  - **Set and forget:** if the case display is unplugged or switched off, the panel falls back to a window. When the display comes back, the panel returns to it fullscreen. Right-click the panel for *Back to window*, *Fullscreen on display…*, or to turn off snapping.
 - **Export / import.** Share a finished panel as one `.rigpanel` file. The background image is included.
 - **More sensors for free.** RigSense reads every CPU, motherboard, RAM, drive and fan sensor from **LibreHardwareMonitor** or **HWiNFO's free Gadget mode**. It does not use HWiNFO shared memory, which has a 12-hour limit in the free version. It also reads **FPS and frame time** from RTSS.
 - **Component check.** RigSense detects your GPU driver, RTSS, LibreHardwareMonitor and HWiNFO, links each download page, and can install the latest version for you through `winget`.
@@ -81,7 +84,7 @@ The **Components** button (also shown at start-up when something is missing) che
 1. Open the **Sensor panel** tab and pick your screen size (or type a custom one).
 2. Click **Add** to add widgets, or click a sensor in the list on the right. Drag a widget to move it and drag its corner to resize. **Del** removes it and the arrow keys nudge it.
 3. Select a widget to change its type, colour, background, text size, label, range, alert levels and so on.
-4. Under **Show on**, choose **Virtual panel** or your case display, then click **Open panel**. Turn on **Open at start** to open it automatically.
+4. Click **Open panel**. To put it on your case display, either drag the virtual panel onto that display, or pick the display under **Show on** (**Identify** helps you tell screens apart). Turn on **Open at start** so the panel opens automatically with RigSense and follows the display when it's plugged back in.
 5. **Export panel…** saves a `.rigpanel` file you can share. **Import panel…** loads one.
 
 Sensors from HWiNFO and LibreHardwareMonitor are tied to the hardware, so an imported panel tells you which widgets need a sensor picked on your PC.
@@ -148,6 +151,12 @@ New issues get an automatic first look: an AI assistant (Claude) checks the repo
 ---
 
 ## Changelog
+
+**1.2.0** (in the repository, not yet released)
+- Drag the virtual panel onto any display and it goes fullscreen there. A right-click menu offers *Back to window*, *Fullscreen on display…*, and turning snapping on or off.
+- The display picker shows monitor names and resolutions, and **Identify** shows a number on each screen.
+- The panel follows its display automatically: it falls back to a window when the display disconnects and returns to it when it reconnects.
+- When the target display has a different shape, the grid rescales proportionally instead of stretching the widgets.
 
 **1.1.0**
 - Per-pin monitoring for any GPU through external meters: Thermal Grizzly WireView Pro II, ElmorLabs PMD2X, and MSI MPG Ai1300TS/Ai1600TS (GPU Safeguard+, including a second connector). They share all the alerts and the emergency shutdown. WireView device faults raise critical alerts.

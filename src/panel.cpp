@@ -88,8 +88,8 @@ bool Save(const std::wstring& path, const Layout& l) {
     FILE* f = _wfopen(path.c_str(), L"wb");
     if (!f) return false;
     fprintf(f, "# RigSense sensor panel layout - edit it in the app (Sensor panel tab)\n");
-    fprintf(f, "panel width=%d height=%d cols=%d rows=%d gap=%d radius=%d bg=%06X dim=%d autoshow=%d display=%s\n", l.width,
-            l.height, l.cols, l.rows, l.gap, l.radius, l.bgColor, l.bgDim, l.autoShow ? 1 : 0, U8(l.display).c_str());
+    fprintf(f, "panel width=%d height=%d cols=%d rows=%d gap=%d radius=%d bg=%06X dim=%d autoshow=%d snap=%d display=%s\n", l.width,
+            l.height, l.cols, l.rows, l.gap, l.radius, l.bgColor, l.bgDim, l.autoShow ? 1 : 0, l.snapOnDrop ? 1 : 0, U8(l.display).c_str());
     fprintf(f, "image text=%s\n", U8(l.bgImage).c_str());
     for (auto& w : l.widgets) {
         fprintf(f,
@@ -122,6 +122,7 @@ bool Load(const std::wstring& path, Layout& out) {
                 else if (k == "bg") l.bgColor = uint32_t(strtoul(v.c_str(), nullptr, 16));
                 else if (k == "dim") l.bgDim = ParseInt(v, l.bgDim);
                 else if (k == "autoshow") l.autoShow = v == "1";
+                else if (k == "snap") l.snapOnDrop = v != "0";
                 else if (k == "display") l.display = W16(v);
             }
         } else if (line.rfind("image ", 0) == 0) {

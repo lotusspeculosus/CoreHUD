@@ -26,7 +26,7 @@
 #include "sensors.h"
 #include "components.h"
 
-#define RIGSENSE_VERSION L"1.1.0"
+#define RIGSENSE_VERSION L"1.2.0"
 
 namespace {
 
@@ -948,8 +948,11 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         else if (g_tab == TAB_DASH && (wp == 'A' || wp == 'W' || wp == 'V')) { g_mode = wp == 'A' ? 0 : wp == 'W' ? 1 : 2; InvalidateRect(h, nullptr, FALSE); }
         return 0;
     case WM_DISPLAYCHANGE:
-        EnumMonitors();
+        OnDisplaysChanged();
         InvalidateRect(h, nullptr, FALSE);
+        return 0;
+    case WM_APP_PANEL_SNAP:
+        SnapPanel(wp == 0);
         return 0;
     case WM_APP_TRAY:
         if (LOWORD(lp) == WM_LBUTTONUP || LOWORD(lp) == NIN_BALLOONUSERCLICK) {
@@ -1039,6 +1042,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     pc.lpfnWndProc = PanelProc;
     pc.lpszClassName = L"RigSensePanelWnd";
     RegisterClassExW(&pc);
+    WNDCLASSEXW ic = wc;
+    ic.style = 0;
+    ic.lpfnWndProc = IdentifyProc;
+    ic.lpszClassName = L"RigSenseIdentify";
+    RegisterClassExW(&ic);
 
     // sensor panel layout
     g_layoutPath = panel::DefaultPath();

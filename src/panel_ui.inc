@@ -37,8 +37,10 @@ BgBmp* g_curBmp = &g_bmpMain;
 IWICImagingFactory* g_wic = nullptr;
 ID2D1StrokeStyle* g_round = nullptr;
 
-struct MonInfo { std::wstring dev; RECT rc; bool primary; };
+struct MonInfo { std::wstring dev; RECT rc; bool primary; std::wstring name; };
 std::vector<MonInfo> g_mons;
+constexpr UINT WM_APP_PANEL_SNAP = WM_APP + 3;   // posted to the main window: wParam 0 = fullscreen on g_snapDev, 1 = back to window
+std::wstring g_snapDev;
 
 double NowSec() { return GetTickCount64() / 1000.0; }
 
@@ -81,9 +83,107 @@ void EnumMonitors() {
     EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR m, HDC, LPRECT, LPARAM) -> BOOL {
         MONITORINFOEXW mi{};
         mi.cbSize = sizeof mi;
-        if (GetMonitorInfoW(m, &mi)) g_mons.push_back({mi.szDevice, mi.rcMonitor, (mi.dwFlags & MONITORINFOF_PRIMARY) != 0});
+        if (GetMonitorInfoW(m, &mi)) g_mons.push_back({mi.szDevice, mi.rcMonitor, (mi.dwFlags & MONITORINFOF_PRIMARY) != 0, L""});
         return TRUE;
     }, 0);
+    // Friendly monitor names ("ASUS VG27A", "8.8 inch bar") via the display configuration API.
+    UINT32 np = 0, nm = 0;
+    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &np, &nm) != ERROR_SUCCESS) return;
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths(np);
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes(nm);
+    if (QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &np, paths.data(), &nm, modes.data(), nullptr) != ERROR_SUCCESS) return;
+    for (UINT32 i = 0; i < np; ++i) {
+        DISPLAYCONFIG_SOURCE_DEVICE_NAME src{};
+        src.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+        src.header.size = sizeof src;
+        src.header.adapterId = paths[i].sourceInfo.adapterId;
+        src.header.id = paths[i].sourceInfo.id;
+        DISPLAYCONFIG_TARGET_DEVICE_NAME tgt{};
+        tgt.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+        tgt.header.size = sizeof tgt;
+        tgt.header.adapterId = paths[i].targetInfo.adapterId;
+        tgt.header.id = paths[i].targetInfo.id;
+        if (DisplayConfigGetDeviceInfo(&src.header) != ERROR_SUCCESS || DisplayConfigGetDeviceInfo(&tgt.header) != ERROR_SUCCESS) continue;
+        for (auto& mo : g_mons)
+            if (mo.dev == src.viewGdiDeviceName && tgt.monitorFriendlyDeviceName[0]) mo.name = tgt.monitorFriendlyDeviceName;
+    }
+}
+
+int MonitorIndex(const std::wstring& dev) {
+    for (size_t i = 0; i < g_mons.size(); ++i) if (g_mons[i].dev == dev) return int(i);
+    return -1;
+}
+
+std::wstring MonitorLabel(int i) {
+    if (i < 0 || i >= int(g_mons.size())) return L"";
+    const auto& m = g_mons[size_t(i)];
+    std::wstring s = F(L"Display %d", i + 1);
+    if (!m.name.empty()) s += L" \u00b7 " + m.name;
+    s += F(L" \u00b7 %d\u00d7%d", m.rc.right - m.rc.left, m.rc.bottom - m.rc.top);
+    if (m.primary) s += L" (main)";
+    return s;
+}
+
+// --- "Identify displays": a big number on every screen for a few seconds ---
+LRESULT CALLBACK IdentifyProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
+    switch (m) {
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(h, &ps);
+        RECT rc;
+        GetClientRect(h, &rc);
+        HBRUSH bg = CreateSolidBrush(RGB(0x15, 0x18, 0x1D));
+        FillRect(dc, &rc, bg);
+        DeleteObject(bg);
+        HBRUSH edge = CreateSolidBrush(RGB(0x2F, 0xD9, 0xC4));
+        FrameRect(dc, &rc, edge);
+        DeleteObject(edge);
+        int idx = int(GetWindowLongPtrW(h, GWLP_USERDATA));
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, RGB(0x2F, 0xD9, 0xC4));
+        HFONT fontBig = CreateFontW(-(rc.bottom * 55 / 100), 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+        HGDIOBJ old = SelectObject(dc, fontBig);
+        RECT top = rc;
+        top.bottom = rc.bottom * 70 / 100;
+        std::wstring num = std::to_wstring(idx + 1);
+        DrawTextW(dc, num.c_str(), -1, &top, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        HFONT fontSmall = CreateFontW(-(rc.bottom / 11), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+        SelectObject(dc, fontSmall);
+        SetTextColor(dc, RGB(0xEE, 0xF1, 0xF4));
+        RECT bottom = rc;
+        bottom.top = top.bottom - 8;
+        bottom.left += 12;
+        bottom.right -= 12;
+        std::wstring lab = MonitorLabel(idx);
+        DrawTextW(dc, lab.c_str(), -1, &bottom, DT_CENTER | DT_TOP | DT_WORDBREAK | DT_END_ELLIPSIS);
+        SelectObject(dc, old);
+        DeleteObject(fontBig);
+        DeleteObject(fontSmall);
+        EndPaint(h, &ps);
+        return 0;
+    }
+    case WM_TIMER:
+    case WM_LBUTTONUP:
+        DestroyWindow(h);
+        return 0;
+    }
+    return DefWindowProcW(h, m, wp, lp);
+}
+
+void IdentifyDisplays() {
+    EnumMonitors();
+    HINSTANCE inst = GetModuleHandleW(nullptr);
+    for (size_t i = 0; i < g_mons.size(); ++i) {
+        const RECT& r = g_mons[i].rc;
+        int mw = r.right - r.left, mh = r.bottom - r.top;
+        int h = std::clamp(mh * 45 / 100, 120, 420), w = std::min(mw - 20, h * 16 / 10);
+        HWND wnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"RigSenseIdentify", L"", WS_POPUP,
+                                   r.left + (mw - w) / 2, r.top + (mh - h) / 2, w, h, nullptr, nullptr, inst, nullptr);
+        if (!wnd) continue;
+        SetWindowLongPtrW(wnd, GWLP_USERDATA, LONG_PTR(i));
+        ShowWindow(wnd, SW_SHOWNOACTIVATE);
+        SetTimer(wnd, 1, 3000, nullptr);
+    }
 }
 
 void ReleaseBmp(BgBmp& b) { SafeRelease(b.bmp); b.path.clear(); b.failed = false; }
@@ -513,6 +613,7 @@ void AddWidget(panel::WType t, const std::string& sensor = "") {
 }
 
 void ShowPanel(bool on);
+void AdoptResolution(int w, int h);
 
 void ExportPanel() {
     wchar_t file[MAX_PATH] = L"my-panel.rigpanel";
@@ -677,18 +778,16 @@ void DrawPanelEditor(float W, float H) {
             int cur = 0;
             for (size_t o = 1; o < opts.size(); ++o) if (g_mons[size_t(opts[o])].dev == g_layout.display) cur = int(o);
             std::wstring dl = L"Virtual panel (window)";
-            if (cur > 0) {
-                auto& m = g_mons[size_t(opts[size_t(cur)])];
-                dl = F(L"Display %d: %d×%d (fullscreen)", opts[size_t(cur)] + 1, m.rc.right - m.rc.left, m.rc.bottom - m.rc.top);
-            } else if (!g_layout.display.empty() && g_layout.display != L"virtual") dl = L"Virtual (saved display not connected)";
-            Btn(R(cx, y, w - 92, ctl), dl + L"  ▸", false, [opts, cur] {
+            if (cur > 0) dl = MonitorLabel(opts[size_t(cur)]) + L" \u00b7 fullscreen";
+            else if (!g_layout.display.empty() && g_layout.display != L"virtual") dl = L"Window until the saved display is connected";
+            Btn(R(cx + w - 92 - 78, y, 78, ctl), L"Identify", false, [] { IdentifyDisplays(); });
+            Btn(R(cx, y, w - 92 - 84, ctl), dl + L"  \u25B8", false, [opts, cur] {
                 size_t n = size_t(cur + 1) % opts.size();
                 if (opts[n] < 0) g_layout.display = L"virtual";
                 else {
                     auto& m = g_mons[size_t(opts[n])];
                     g_layout.display = m.dev;
-                    g_layout.width = m.rc.right - m.rc.left;
-                    g_layout.height = m.rc.bottom - m.rc.top;
+                    AdoptResolution(m.rc.right - m.rc.left, m.rc.bottom - m.rc.top);
                 }
                 bool open = g_panelWnd != nullptr;
                 ShowPanel(false);
@@ -1076,6 +1175,17 @@ LRESULT CALLBACK PanelProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_NCHITTEST:
         if (g_panelVirtual) return HTCAPTION;   // drag anywhere to move the virtual panel
         break;
+    case WM_EXITSIZEMOVE:
+        // Dropped the virtual panel on another (non-main) display: go fullscreen there.
+        if (g_panelVirtual && g_layout.snapOnDrop) {
+            MONITORINFOEXW mi{};
+            mi.cbSize = sizeof mi;
+            if (GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi) && !(mi.dwFlags & MONITORINFOF_PRIMARY)) {
+                g_snapDev = mi.szDevice;
+                PostMessageW(g_hwnd, WM_APP_PANEL_SNAP, 0, 0);
+            }
+        }
+        return 0;
     case WM_MOUSEWHEEL:
         if (g_panelVirtual) {
             float k = GET_WHEEL_DELTA_WPARAM(wp) > 0 ? 1.1f : 1 / 1.1f;
@@ -1085,12 +1195,23 @@ LRESULT CALLBACK PanelProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_NCRBUTTONUP:
     case WM_RBUTTONUP: {
         HMENU m2 = CreatePopupMenu();
+        EnumMonitors();
         if (g_panelVirtual) {
             AppendMenuW(m2, MF_STRING | (g_virtTop ? MF_CHECKED : 0), 1, L"Always on top\tT");
             AppendMenuW(m2, MF_STRING, 2, L"Actual size (100%)\t1");
             AppendMenuW(m2, MF_STRING, 3, L"Fit to screen\tF");
+            AppendMenuW(m2, MF_STRING | (g_layout.snapOnDrop ? MF_CHECKED : 0), 5, L"Go fullscreen when dropped on another display");
             AppendMenuW(m2, MF_SEPARATOR, 0, nullptr);
+        } else {
+            AppendMenuW(m2, MF_STRING, 6, L"Back to window (virtual panel)");
         }
+        int curMon = MonitorIndex(g_layout.display);
+        for (size_t i = 0; i < g_mons.size(); ++i) {
+            if (g_mons[i].primary || (!g_panelVirtual && int(i) == curMon)) continue;
+            AppendMenuW(m2, MF_STRING, UINT(100 + i), (L"Fullscreen on " + MonitorLabel(int(i))).c_str());
+        }
+        AppendMenuW(m2, MF_STRING, 7, L"Identify displays");
+        AppendMenuW(m2, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(m2, MF_STRING, 4, L"Close panel\tEsc");
         POINT pt;
         GetCursorPos(&pt);
@@ -1100,6 +1221,13 @@ LRESULT CALLBACK PanelProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         else if (cmd == 2) SetVirtualScale(1.f);
         else if (cmd == 3) SetVirtualScale(FitVirtualScale());
         else if (cmd == 4) DestroyWindow(h);
+        else if (cmd == 5) { g_layout.snapOnDrop = !g_layout.snapOnDrop; SaveLayout(); }
+        else if (cmd == 6) PostMessageW(g_hwnd, WM_APP_PANEL_SNAP, 1, 0);
+        else if (cmd == 7) IdentifyDisplays();
+        else if (cmd >= 100 && cmd < 100 + int(g_mons.size())) {
+            g_snapDev = g_mons[size_t(cmd - 100)].dev;
+            PostMessageW(g_hwnd, WM_APP_PANEL_SNAP, 0, 0);
+        }
         return 0;
     }
     case WM_NCLBUTTONDBLCLK:
@@ -1154,6 +1282,55 @@ void ShowPanel(bool on) {
         DwmSetWindowAttribute(g_panelWnd, 33, &corner, sizeof corner);
     }
     if (g_panelWnd) ShowWindow(g_panelWnd, g_panelVirtual ? SW_SHOW : SW_SHOWNOACTIVATE);
+}
+
+// Use a display's resolution for the panel. Same shape (e.g. a 1920x480 bar for a 1920x480 design): kept as
+// designed. Clearly different shape: the grid is rescaled proportionally so widgets keep their arrangement
+// with roughly square cells instead of being stretched.
+void AdoptResolution(int w, int h) {
+    double oldAspect = double(g_layout.width) / g_layout.height, newAspect = double(w) / h;
+    g_layout.width = w;
+    g_layout.height = h;
+    if (std::fabs(newAspect - oldAspect) / oldAspect > 0.10) {
+        int c, r;
+        panel::AutoGrid(w, h, c, r);
+        panel::Regrid(g_layout, c, r);
+    }
+}
+
+// Fullscreen on a display (adopting its resolution) or back to the floating window.
+void SnapPanel(bool toDisplay) {
+    EnumMonitors();
+    if (toDisplay) {
+        int i = MonitorIndex(g_snapDev);
+        if (i < 0 || g_mons[size_t(i)].primary) return;
+        const auto& m = g_mons[size_t(i)];
+        g_layout.display = m.dev;
+        AdoptResolution(m.rc.right - m.rc.left, m.rc.bottom - m.rc.top);
+    } else {
+        g_layout.display = L"virtual";
+    }
+    ShowPanel(false);
+    SaveLayout();
+    ShowPanel(true);
+    if (g_hwnd) InvalidateRect(g_hwnd, nullptr, FALSE);
+}
+
+// Displays plugged in / out: follow the saved panel display automatically.
+void OnDisplaysChanged() {
+    EnumMonitors();
+    int i = MonitorIndex(g_layout.display);
+    bool savedPresent = i >= 0 && !g_mons[size_t(i)].primary;
+    if (g_panelWnd) {
+        if (g_panelVirtual && savedPresent) { ShowPanel(false); ShowPanel(true); }        // display came back: fullscreen again
+        else if (!g_panelVirtual && !savedPresent) { ShowPanel(false); ShowPanel(true); } // display gone: fall back to the window
+        else if (!g_panelVirtual && savedPresent) {                                        // resolution / position changed
+            const RECT& r = g_mons[size_t(i)].rc;
+            SetWindowPos(g_panelWnd, nullptr, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    } else if (g_layout.autoShow && savedPresent) {
+        ShowPanel(true);
+    }
 }
 
 void OnSampleForPanel() {

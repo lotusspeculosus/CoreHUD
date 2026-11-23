@@ -44,7 +44,8 @@ struct Layout {
     std::wstring bgImage;
     int bgDim = 40;                         // % darkening over the image
     std::wstring display;                   // \\.\DISPLAYn
-    bool autoShow = false;
+    bool autoShow = false;                  // open the panel window when the app starts
+    bool snapOnDrop = true;                 // virtual panel dropped on another display -> fullscreen there
     std::vector<Widget> widgets;
 };
 
