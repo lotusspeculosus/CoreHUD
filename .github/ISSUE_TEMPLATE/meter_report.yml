@@ -37,8 +37,8 @@ body:
   - type: textarea
     id: meters
     attributes:
-      label: Output of `rigsense-cli --meters`
-      description: In the RigSense folder run `.\rigsense-cli.exe --meters` (with some GPU load if you can) and paste everything
+      label: Output of `RigSense.exe --cli --meters`
+      description: Open a terminal in the RigSense folder and run `.\RigSense.exe --cli --meters | more` (with some GPU load if you can), then paste everything. RigSense 1.3.0 and older - run `.\rigsense-cli.exe --meters`
       render: text
     validations:
       required: true
@@ -51,4 +51,4 @@ body:
     id: version
     attributes:
       label: RigSense version
-      placeholder: "1.1.0"
+      placeholder: "1.3.1"

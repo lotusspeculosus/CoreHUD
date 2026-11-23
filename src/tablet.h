@@ -26,6 +26,7 @@ public:
     bool Wanted(int& w, int& h);
     void SetFrame(std::vector<unsigned char>&& jpeg, int w, int h);
     void SetIcon(std::vector<unsigned char>&& png);
+    void SetKeepAwakeVideo(std::vector<unsigned char>&& mp4);   // tiny looping clip that keeps the tablet screen on
     int Viewers();             // distinct clients seen in the last 5 s
     bool LastSize(int& w, int& h);   // resolution the most recent tablet/phone asked for (physical pixels)
 
@@ -39,7 +40,7 @@ private:
     int port_ = 0;
     std::string key_;
     std::mutex mx_;
-    std::vector<unsigned char> frame_, icon_;
+    std::vector<unsigned char> frame_, icon_, video_;
     int frameW_ = 0, frameH_ = 0, wantW_ = 0, wantH_ = 0;
     unsigned long lastRequest_ = 0;
     struct Peer { std::string addr; unsigned long tick; };

@@ -123,8 +123,7 @@ std::string Sha256Hex(const std::vector<unsigned char>& data) {
     std::string hex;
     if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) == 0) {
         if (BCryptCreateHash(alg, &h, nullptr, 0, nullptr, 0, 0) == 0) {
-            BCryptHashData(h, const_cast<PUCHAR>(data.data()), ULONG(data.size()), 0);
-            if (BCryptFinishHash(h, digest, 32, 0) == 0) {
+            if (BCryptHashData(h, const_cast<PUCHAR>(data.data()), ULONG(data.size()), 0) == 0 && BCryptFinishHash(h, digest, 32, 0) == 0) {
                 char b[3];
                 for (unsigned char x : digest) { snprintf(b, sizeof b, "%02x", x); hex += b; }
             }
@@ -139,10 +138,12 @@ std::string ExpectedSha(const std::string& text, const std::string& fileName) {
     std::istringstream in(text);
     std::string line;
     while (std::getline(in, line)) {
-        while (!line.empty() && (line.back() == '' || line.back() == ' ' || line.back() == '	')) line.pop_back();
-        size_t sp = line.find_first_of(" 	");
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) line.pop_back();
+        size_t sp = line.find_first_of(" \t");
         if (sp == std::string::npos) continue;
-        std::string hash = line.substr(0, sp), name = line.substr(line.find_first_not_of(" 	*", sp));
+        size_t np = line.find_first_not_of(" \t*", sp);
+        if (np == std::string::npos) continue;   // "<hash> *" with no file name
+        std::string hash = line.substr(0, sp), name = line.substr(np);
         if (name != fileName || hash.size() != 64) continue;   // exact file name match (no "RigSense.exe.old" etc.)
         bool hex = true;
         for (auto& ch : hash) { ch = char(tolower(static_cast<unsigned char>(ch))); hex = hex && isxdigit(static_cast<unsigned char>(ch)); }
@@ -193,32 +194,36 @@ bool FetchLatest(const std::string& repo, Release& out, std::string& err) {
             const json::JVal* n = a.get("name");
             const json::JVal* u = a.get("browser_download_url");
             if (!n || !u) continue;
-            if (n->str == "RigSense.exe") r.exeUrl = u->str;
-            else if (n->str == "rigsense-cli.exe") r.cliUrl = u->str;
-            else if (n->str == "SHA256SUMS.txt") r.sumsUrl = u->str;
+            if (n->str == "RigSense.exe") {
+                r.exeUrl = u->str;
+                const json::JVal* d = a.get("digest");   // GitHub: "sha256:<64 hex>"
+                if (d && d->t == json::JVal::Str && d->str.rfind("sha256:", 0) == 0 && d->str.size() == 7 + 64) {
+                    r.exeSha = d->str.substr(7);
+                    for (auto& ch : r.exeSha) ch = char(tolower(static_cast<unsigned char>(ch)));
+                }
+            } else if (n->str == "SHA256SUMS.txt") r.sumsUrl = u->str;
         }
     out = r;
     return true;
 }
 
 bool Stage(const Release& r, std::string& err) {
-    if (r.exeUrl.empty() || r.sumsUrl.empty()) { err = "release has no RigSense.exe / SHA256SUMS.txt (update manually from the release page)"; return false; }
-    std::vector<unsigned char> sums, exe, cli;
-    if (!HttpsGet(r.sumsUrl, sums, err, 64 * 1024, false)) { err = "checksums: " + err; return false; }
-    if (!HttpsGet(r.exeUrl, exe, err, 64 * 1024 * 1024, false)) { err = "RigSense.exe: " + err; return false; }
-    if (!r.cliUrl.empty() && !HttpsGet(r.cliUrl, cli, err, 64 * 1024 * 1024, false)) { err = "rigsense-cli.exe: " + err; return false; }
-    std::string text(sums.begin(), sums.end());
-    std::string he = ExpectedSha(text, "RigSense.exe");
-    if (he.empty() || Sha256Hex(exe) != he) { err = "RigSense.exe failed the SHA-256 check - not installed"; return false; }
-    if (!LooksLikeExe(exe)) { err = "downloaded file is not a valid program - not installed"; return false; }
-    if (!cli.empty()) {
-        std::string hc = ExpectedSha(text, "rigsense-cli.exe");
-        if (hc.empty() || Sha256Hex(cli) != hc || !LooksLikeExe(cli)) { err = "rigsense-cli.exe failed the SHA-256 check - not installed"; return false; }
+    if (r.exeUrl.empty()) { err = "release has no RigSense.exe (update manually from the release page)"; return false; }
+    // expected hash: GitHub's own digest for the asset, else the release's SHA256SUMS.txt
+    std::string expected = r.exeSha;
+    if (expected.empty()) {
+        if (r.sumsUrl.empty()) { err = "release has no checksum - not installed (update manually from the release page)"; return false; }
+        std::vector<unsigned char> sums;
+        if (!HttpsGet(r.sumsUrl, sums, err, 64 * 1024, false)) { err = "checksums: " + err; return false; }
+        expected = ExpectedSha(std::string(sums.begin(), sums.end()), "RigSense.exe");
     }
+    std::vector<unsigned char> exe;
+    if (!HttpsGet(r.exeUrl, exe, err, 64 * 1024 * 1024, false)) { err = "RigSense.exe: " + err; return false; }
+    if (expected.size() != 64 || Sha256Hex(exe) != expected) { err = "RigSense.exe failed the SHA-256 check - not installed"; return false; }
+    if (!LooksLikeExe(exe)) { err = "downloaded file is not a valid program - not installed"; return false; }
     std::wstring dir = UpdateDir();
     CreateDirectoryW(dir.c_str(), nullptr);
     if (!WriteFileAll(dir + L"\\RigSense.exe", exe)) { err = "cannot write to the RigSense folder (move RigSense to a folder you can write to, e.g. not Program Files)"; return false; }
-    if (!cli.empty()) WriteFileAll(dir + L"\\rigsense-cli.exe", cli);
     std::vector<unsigned char> ver(r.version.begin(), r.version.end());
     WriteFileAll(dir + L"\\version.txt", ver);
     return true;
@@ -246,11 +251,6 @@ bool ApplyStaged(std::string& err) {
         err = "cannot move the new program into place";
         return false;
     }
-    std::wstring cliNew = up + L"\\rigsense-cli.exe", cli = dir + L"\\rigsense-cli.exe";
-    if (GetFileAttributesW(cliNew.c_str()) != INVALID_FILE_ATTRIBUTES) {
-        MoveFileExW(cli.c_str(), (cli + L".old").c_str(), MOVEFILE_REPLACE_EXISTING);
-        MoveFileExW(cliNew.c_str(), cli.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED);
-    }
     DeleteFileW((up + L"\\version.txt").c_str());
     RemoveDirectoryW(up.c_str());
     std::wstring cmd = L"\"" + exe + L"\" --updated --wait-pid " + std::to_wstring(GetCurrentProcessId());
@@ -269,6 +269,8 @@ bool ApplyStaged(std::string& err) {
 
 void CleanupOld() {
     std::wstring dir = mon::ExeDir();
+    // just updated from 1.3.0 or older: the separate console exe is replaced by "RigSense.exe --cli"
+    if (GetFileAttributesW((dir + L"\\RigSense.exe.old").c_str()) != INVALID_FILE_ATTRIBUTES) DeleteFileW((dir + L"\\rigsense-cli.exe").c_str());
     DeleteFileW((dir + L"\\RigSense.exe.old").c_str());
     DeleteFileW((dir + L"\\rigsense-cli.exe.old").c_str());
 }

@@ -1,10 +1,10 @@
-// rigsense-cli: console reader for the ROG Astral per-pin sensor (handy for testing / scripting).
-//   rigsense-cli.exe            list GPUs, then print 5 readings
-//   rigsense-cli.exe -n 0       print forever (Ctrl+C to stop)
-//   rigsense-cli.exe --force    read even if the card is not in the known list
-//   rigsense-cli.exe --port 1 --addr 0x2B --gpu 0
-//   rigsense-cli.exe --sensors  list every sensor the panel can use
-//   rigsense-cli.exe --meters   find an external per-pin meter (WireView Pro II / PMD2X / MSI PSU) and read it
+// Console mode, built into RigSense.exe (one program for everything):
+//   RigSense.exe --cli                 list GPUs, then print 5 on-card per-pin readings
+//   RigSense.exe --cli -n 0            print forever (Ctrl+C to stop)
+//   RigSense.exe --cli --force         read even if the card is not in the known list
+//   RigSense.exe --cli --port 1 --addr 0x2B --gpu 0
+//   RigSense.exe --cli --sensors       list every sensor the panel can use
+//   RigSense.exe --cli --meters        find an external per-pin meter (WireView Pro II / PMD2X / MSI PSU) and read it
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <objbase.h>
@@ -64,13 +64,13 @@ static int ReadMeters(int count) {
             for (auto& e : r.extras) printf("    %ls: %.*f %ls\n", e.name.c_str(), e.decimals, e.value, e.unit.c_str());
             if (r.activeFaults) printf("    ACTIVE FAULTS: 0x%04X\n", r.activeFaults);
         }
-        fflush(stdout);
+        if (fflush(stdout) != 0 || ferror(stdout)) break;
         Sleep(500);
     }
     return 0;
 }
 
-int main(int argc, char** argv) {
+int CliMain(int argc, char** argv) {
     int count = 5, port = 1, addr = 0x2B, gpuIndex = -1, interval = 500;
     bool force = false;
     SetConsoleOutputCP(CP_UTF8);
@@ -84,7 +84,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--gpu")) next(gpuIndex);
         else if (!strcmp(argv[i], "--interval")) next(interval);
         else if (!strcmp(argv[i], "--force")) force = true;
-        else { printf("usage: rigsense-cli [-n count] [--interval ms] [--gpu i] [--port p] [--addr 0x2B] [--force]\n"); return 2; }
+        else { printf("usage: RigSense.exe --cli [--sensors | --meters] [-n count] [--interval ms] [--gpu i] [--port p] [--addr 0x2B] [--force]\n"); return 2; }
     }
 
     std::string err;
@@ -135,7 +135,7 @@ int main(int argc, char** argv) {
             for (int i = 0; i < 6; ++i) printf("P%d %5.2fA %5.2fV  ", i + 1, r.amps[i], r.volts[i]);
             printf("| %6.1f W %5.2f A  (%lu ms)\n", w, a, GetTickCount() - t0);
         }
-        fflush(stdout);
+        if (fflush(stdout) != 0 || ferror(stdout)) break;   // the reader (pipe, "more") went away: stop
         if (count == 0 || n + 1 < count) Sleep(DWORD(interval));
     }
     nvapi::Shutdown();

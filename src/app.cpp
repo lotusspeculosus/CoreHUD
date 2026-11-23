@@ -30,6 +30,10 @@
 #include "tablet.h"
 #include "third_party/qrcodegen/qrcodegen.hpp"
 #include <objbase.h>
+#include <mfapi.h>
+#include <mfidl.h>
+#include <mfreadwrite.h>
+#include <codecapi.h>
 #include <atomic>
 #include <thread>
 
@@ -988,6 +992,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_DESTROY:
         g_adb.Stop();       // undo adb reverse / stay-awake on connected tablets
         g_tabSrv.Stop();
+        if (g_kaThread.joinable()) g_kaThread.join();   // keep-awake video encoder (finishes within a second)
         ShowPanel(false);
         if (g_nid.cbSize) Shell_NotifyIconW(NIM_DELETE, &g_nid);
         mon::Stop();
@@ -1032,7 +1037,49 @@ HICON MakeIcon(int size) {
 
 } // namespace
 
+int CliMain(int argc, char** argv);   // cli.cpp - console mode, built into this exe
+
+// "RigSense.exe --cli ..." runs the console tools in the terminal it was started from (or into a pipe/file).
+static int RunCli(int argc, LPWSTR* wargv) {
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD type = out && out != INVALID_HANDLE_VALUE ? GetFileType(out) : FILE_TYPE_UNKNOWN;
+    bool redirected = type == FILE_TYPE_DISK || type == FILE_TYPE_PIPE;
+    // Always join the terminal it was started from, also when the output is piped/redirected: that way Ctrl+C
+    // in the terminal stops it (otherwise "-n 0 | more" could keep running invisibly after more quits).
+    bool attached = AttachConsole(ATTACH_PARENT_PROCESS) != FALSE;
+    if (!redirected) {
+        if (!attached) AllocConsole();
+        FILE* f = nullptr;
+        freopen_s(&f, "CONOUT$", "w", stdout);
+        freopen_s(&f, "CONOUT$", "w", stderr);
+        printf("\n");
+    }
+    std::vector<std::string> args;
+    args.push_back("RigSense.exe");
+    for (int i = 2; i < argc; ++i) {
+        int n = WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, nullptr, 0, nullptr, nullptr);
+        std::string a(size_t(n > 0 ? n - 1 : 0), '\0');
+        if (n > 1) WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, a.data(), n, nullptr, nullptr);
+        args.push_back(a);
+    }
+    std::vector<char*> ptrs;
+    for (auto& a : args) ptrs.push_back(a.data());
+    int rc = CliMain(int(ptrs.size()), ptrs.data());
+    fflush(stdout);
+    return rc;
+}
+
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
+    {
+        int argc = 0;
+        LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+        if (argv && argc >= 2 && !_wcsicmp(argv[1], L"--cli")) {
+            int rc = RunCli(argc, argv);
+            LocalFree(argv);
+            return rc;
+        }
+        if (argv) LocalFree(argv);
+    }
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     // After an auto-update the new version is started with --wait-pid <old pid>: wait for the old one to exit.
     bool justUpdated = false;

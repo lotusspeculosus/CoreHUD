@@ -56,7 +56,8 @@ jobs:
                concise comment with `gh issue comment` explaining what you found, citing files/lines):
                - `bug` (confirmed): explain the cause; continue with step 4 if a safe fix is clear.
                - `question` / needs info: ask for the specific missing details (version, steps, Event log,
-                 `rigsense-cli --sensors` or `--meters` output). Stop.
+                 the text from Settings → Copy diagnostics, or `RigSense.exe --cli --meters | more` output for
+                 meters; RigSense 1.3.0 and older use `rigsense-cli --sensors` / `--meters`). Stop.
                - `invalid` (not a bug / works as designed): explain kindly. Stop.
                - `duplicate`: link the existing issue (`gh issue list`). Stop.
                - `enhancement`: summarise it for the maintainer; do not implement unless it is tiny and safe. Stop.

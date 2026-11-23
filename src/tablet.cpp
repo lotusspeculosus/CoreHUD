@@ -1,3 +1,4 @@
+#define _CRT_RAND_S   // rand_s: fallback for the secret key
 #include "tablet.h"
 
 #define WIN32_LEAN_AND_MEAN
@@ -40,9 +41,19 @@ function tick(){var s=size();
  back.onload=function(){back.style.visibility='visible';front.style.visibility='hidden';var t=front;front=back;back=t;fails=0;st.style.display='none';setTimeout(tick,450);};
  back.onerror=function(){fails++;if(fails>2){st.style.display='block';st.innerHTML='Reconnecting to RigSense&hellip;<br><small>Is RigSense running and the tablet panel switched on?</small>';}setTimeout(tick,1500);};
  back.src='frame.jpg?k='+K+'&w='+s[0]+'&h='+s[1]+'&t='+(new Date().getTime());}
-function lock(){try{if(navigator.wakeLock&&navigator.wakeLock.request){navigator.wakeLock.request('screen')['catch'](function(){});}}catch(e){}}
+// Keep the screen on: the Wake Lock API where the browser allows it (USB/localhost, newer browsers), plus a muted
+// looping black video, which keeps the screen on in practically every browser - also over plain http (Wi-Fi).
+// It fills the screen *behind* the panel images: browsers only hold the screen on for a visible, reasonably big video.
+var v=document.createElement('video');v.muted=true;v.loop=true;
+v.setAttribute('muted','');v.setAttribute('loop','');v.setAttribute('playsinline','');v.setAttribute('webkit-playsinline','');
+v.style.cssText='position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover;background:#0b0e12;pointer-events:none';
+v.onerror=function(){setTimeout(function(){v.src='keepawake.mp4?k='+K+'&r='+(new Date().getTime());play();},5000);};
+v.src='keepawake.mp4?k='+K;document.body.insertBefore(v,document.body.firstChild);
+function play(){try{var p=v.play();if(p&&p['catch'])p['catch'](function(){});}catch(e){}}
+function lock(){try{if(navigator.wakeLock&&navigator.wakeLock.request){navigator.wakeLock.request('screen')['catch'](function(){});}}catch(e){}play();}
 document.body.onclick=function(){var d=document.documentElement,f=d.requestFullscreen||d.webkitRequestFullscreen||d.mozRequestFullScreen||d.msRequestFullscreen;if(f){try{f.call(d);}catch(e){}}lock();};
 document.addEventListener('visibilitychange',function(){if(!document.hidden)lock();});
+setInterval(function(){if(v.paused)play();},10000);
 lock();tick();
 </script></body></html>)HTML";
 
@@ -239,6 +250,43 @@ void Server::Handle(uintptr_t sock, const std::string& peer) {
                                 R"("icons":[{"src":"icon.png?k=%KEY%","sizes":"192x192","type":"image/png"}]})",
                                 "%KEY%", key_);
         Respond(s, 200, "OK", "application/manifest+json", m.data(), m.size());
+    } else if (path == "/keepawake.mp4") {
+        std::vector<unsigned char> vid;
+        {
+            std::lock_guard<std::mutex> lk(mx_);
+            vid = video_;
+        }
+        if (vid.empty()) { Respond(s, 404, "Not Found", "text/plain", "", 0); return; }
+        // Range: bytes=a-b  (media players ask for byte ranges)
+        std::string lower = req;
+        for (auto& c : lower) c = char(tolower(static_cast<unsigned char>(c)));
+        const char kRange[] = "\r\nrange: bytes=";
+        size_t rp = lower.find(kRange);
+        if (rp != std::string::npos) {
+            size_t a = rp + sizeof kRange - 1, dash = lower.find('-', a), eol = lower.find("\r\n", a);
+            size_t total = vid.size(), from = 0, to = total - 1;
+            if (dash != std::string::npos && dash < eol) {
+                std::string sa = lower.substr(a, dash - a), sb = lower.substr(dash + 1, eol - dash - 1);
+                if (!sa.empty()) from = size_t(strtoull(sa.c_str(), nullptr, 10));
+                if (!sb.empty()) to = std::min(total - 1, size_t(strtoull(sb.c_str(), nullptr, 10)));
+                if (sa.empty() && !sb.empty()) { from = total - std::min(total, size_t(strtoull(sb.c_str(), nullptr, 10))); to = total - 1; }
+            }
+            if (from > to || from >= total) {
+                char h[160];
+                int n = snprintf(h, sizeof h, "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */%zu\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", total);
+                SendAll(s, h, size_t(n));
+                return;
+            }
+            char h[320];
+            int n = snprintf(h, sizeof h,
+                             "HTTP/1.1 206 Partial Content\r\nContent-Type: video/mp4\r\nContent-Length: %zu\r\nContent-Range: bytes %zu-%zu/%zu\r\n"
+                             "Accept-Ranges: bytes\r\nCache-Control: max-age=3600\r\nConnection: close\r\n\r\n",
+                             to - from + 1, from, to, total);
+            SendAll(s, h, size_t(n));
+            SendAll(s, reinterpret_cast<const char*>(vid.data() + from), to - from + 1);
+            return;
+        }
+        Respond(s, 200, "OK", "video/mp4", vid.data(), vid.size());
     } else if (path == "/icon.png") {
         std::vector<unsigned char> ic;
         {
@@ -263,6 +311,11 @@ void Server::SetFrame(std::vector<unsigned char>&& jpeg, int w, int h) {
     frame_ = std::move(jpeg);
     frameW_ = w;
     frameH_ = h;
+}
+
+void Server::SetKeepAwakeVideo(std::vector<unsigned char>&& mp4) {
+    std::lock_guard<std::mutex> lk(mx_);
+    video_ = std::move(mp4);
 }
 
 void Server::SetIcon(std::vector<unsigned char>&& png) {
@@ -321,7 +374,14 @@ std::vector<std::string> LocalIPv4() {
 
 std::string RandomKey() {
     unsigned char b[8] = {};
-    BCryptGenRandom(nullptr, b, sizeof b, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    // the key is the panel's only protection on Wi-Fi: it must never come out predictable (all zeros)
+    if (BCryptGenRandom(nullptr, b, sizeof b, BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
+        for (int i = 0; i < 8; i += 4) {
+            unsigned int r = 0;
+            if (rand_s(&r) != 0) r = GetTickCount() ^ (GetCurrentProcessId() << 16) ^ unsigned(reinterpret_cast<uintptr_t>(&r));
+            memcpy(b + i, &r, 4);
+        }
+    }
     char hex[17] = {};
     for (int i = 0; i < 8; ++i) snprintf(hex + 2 * i, 3, "%02x", b[i]);
     return hex;

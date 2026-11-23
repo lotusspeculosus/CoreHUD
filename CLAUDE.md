@@ -25,8 +25,9 @@ contribute to a melted connector or a fire, so safety rules below override every
 - `src/panel.*` – sensor panel layout model, `panel.txt`, `.rigpanel` export/import
 - `src/components.*` – driver/RTSS/LHM/HWiNFO/adb detection + winget install
 - `src/updater.*`, `settings_ui.inc` – GitHub-release auto-update (SHA-256 verified) and the Settings window; `version.h` = version
+- `src/cli.cpp` – console mode, built into the same exe (`RigSense.exe --cli ...`, dispatched at the top of `wWinMain`). There is one exe only
 - `src/tablet.*`, `tablet_ui.inc` – tablet/phone panel: tiny read-only HTTP server (secret key, GET only), off-screen
-  frame rendering to JPEG, `adb reverse` for USB. `src/third_party/qrcodegen` = Nayuki QR library (MIT, unmodified)
+  frame rendering to JPEG, `adb reverse` for USB, `/keepawake.mp4` (Media Foundation, delay-loaded) keeps the screen on. `src/third_party/qrcodegen` = Nayuki QR library (MIT, unmodified)
 - Tablet server rules: keep it read-only (no endpoints that change state), keep the key check on every request,
   USB-only mode must bind to 127.0.0.1 only
 - `tests/` – `test_pins.cpp` (decoders), `test_panel.cpp` (layout, export/import, fuzz)

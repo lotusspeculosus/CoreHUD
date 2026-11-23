@@ -37,6 +37,11 @@ int main() {
     CHECK(upd::ExpectedSha(sums, "rigsense-cli.exe") == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
     CHECK(upd::ExpectedSha(sums, "missing.exe").empty());
     CHECK(upd::ExpectedSha("", "RigSense.exe").empty());
+    // malformed lines (hash with no file name) must be skipped, not crash
+    CHECK(upd::ExpectedSha("2ea77e9def81698932d4a6191ee91b3f1dd9be9405936c7be9693a4997077ded *\n", "RigSense.exe").empty());
+    CHECK(upd::ExpectedSha("2ea77e9def81698932d4a6191ee91b3f1dd9be9405936c7be9693a4997077ded \t*\r\n"
+                           "2ea77e9def81698932d4a6191ee91b3f1dd9be9405936c7be9693a4997077ded  RigSense.exe\n", "RigSense.exe") ==
+          "2ea77e9def81698932d4a6191ee91b3f1dd9be9405936c7be9693a4997077ded");
 
     printf("\nupdate: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

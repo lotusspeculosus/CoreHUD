@@ -41,12 +41,110 @@ void SaveTabletCfg() {
     WritePrivateProfileStringW(L"Tablet", L"Key", Wide(g_tabCfg.key).c_str(), g_ini.c_str());
 }
 
+// A 2-second, 64x64 black H.264 MP4 made with Windows' own Media Foundation encoder (a few KB). The tablet page plays
+// it muted and invisible on a loop, which keeps the tablet's screen from turning off - no download, no extra file.
+// (The MP4 writer refuses an in-memory stream, so it is written to a temp file, read back and deleted.)
+std::vector<unsigned char> MakeKeepAwakeVideo() {
+    std::vector<unsigned char> out;
+    // mfplat/mfreadwrite are delay-loaded: Windows "N" editions without the Media Feature Pack lack them, and
+    // RigSense must still start there (the page then relies on the Wake Lock API / the tablet's own setting).
+    if (!LoadLibraryW(L"mfplat.dll") || !LoadLibraryW(L"mfreadwrite.dll")) return out;
+    if (FAILED(MFStartup(MF_VERSION, MFSTARTUP_LITE))) return out;
+    const UINT32 W = 64, H = 64, FPS = 10, FRAMES = 20;
+    wchar_t tmp[MAX_PATH + 1] = {};
+    GetTempPathW(MAX_PATH, tmp);
+    std::wstring file = std::wstring(tmp) + L"rigsense-keepawake-" + std::to_wstring(GetCurrentProcessId()) + L".mp4";
+    IMFAttributes* attr = nullptr;
+    IMFSinkWriter* wr = nullptr;
+    IMFMediaType *mo = nullptr, *mi = nullptr;
+    DWORD idx = 0;
+    HRESULT hr = MFCreateAttributes(&attr, 1);
+    if (SUCCEEDED(hr)) hr = attr->SetGUID(MF_TRANSCODE_CONTAINERTYPE, MFTranscodeContainerType_MPEG4);
+    if (SUCCEEDED(hr)) hr = MFCreateSinkWriterFromURL(file.c_str(), nullptr, attr, &wr);
+    if (SUCCEEDED(hr)) hr = MFCreateMediaType(&mo);
+    if (SUCCEEDED(hr)) {
+        mo->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+        mo->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264);
+        mo->SetUINT32(MF_MT_AVG_BITRATE, 40000);
+        mo->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_Base);   // Baseline: plays on the oldest tablets
+        mo->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+        MFSetAttributeSize(mo, MF_MT_FRAME_SIZE, W, H);
+        MFSetAttributeRatio(mo, MF_MT_FRAME_RATE, FPS, 1);
+        MFSetAttributeRatio(mo, MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+        hr = wr->AddStream(mo, &idx);
+    }
+    if (SUCCEEDED(hr)) hr = MFCreateMediaType(&mi);
+    if (SUCCEEDED(hr)) {
+        mi->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+        mi->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32);
+        mi->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+        mi->SetUINT32(MF_MT_DEFAULT_STRIDE, W * 4);
+        MFSetAttributeSize(mi, MF_MT_FRAME_SIZE, W, H);
+        MFSetAttributeRatio(mi, MF_MT_FRAME_RATE, FPS, 1);
+        MFSetAttributeRatio(mi, MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+        hr = wr->SetInputMediaType(idx, mi, nullptr);
+    }
+    if (SUCCEEDED(hr)) hr = wr->BeginWriting();
+    for (UINT32 i = 0; SUCCEEDED(hr) && i < FRAMES; ++i) {
+        IMFMediaBuffer* buf = nullptr;
+        IMFSample* sm = nullptr;
+        hr = MFCreateMemoryBuffer(W * H * 4, &buf);
+        BYTE* p = nullptr;
+        if (SUCCEEDED(hr) && SUCCEEDED(buf->Lock(&p, nullptr, nullptr))) {
+            memset(p, 0, W * H * 4);   // black
+            buf->Unlock();
+            buf->SetCurrentLength(W * H * 4);
+        }
+        if (SUCCEEDED(hr)) hr = MFCreateSample(&sm);
+        if (SUCCEEDED(hr)) hr = sm->AddBuffer(buf);
+        if (SUCCEEDED(hr)) hr = sm->SetSampleTime(LONGLONG(i) * 10000000 / FPS);
+        if (SUCCEEDED(hr)) hr = sm->SetSampleDuration(10000000 / FPS);
+        if (SUCCEEDED(hr)) hr = wr->WriteSample(idx, sm);
+        SafeRelease(sm);
+        SafeRelease(buf);
+    }
+    if (SUCCEEDED(hr)) hr = wr->Finalize();
+    SafeRelease(mi);
+    SafeRelease(mo);
+    SafeRelease(wr);   // closes the file
+    SafeRelease(attr);
+    MFShutdown();
+    if (SUCCEEDED(hr)) {
+        HANDLE f = CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (f != INVALID_HANDLE_VALUE) {
+            LARGE_INTEGER sz{};
+            if (GetFileSizeEx(f, &sz) && sz.QuadPart > 0 && sz.QuadPart < 1024 * 1024) {
+                out.resize(size_t(sz.QuadPart));
+                DWORD got = 0;
+                if (!ReadFile(f, out.data(), DWORD(out.size()), &got, nullptr) || got != out.size()) out.clear();
+            }
+            CloseHandle(f);
+        }
+    }
+    DeleteFileW(file.c_str());
+    return out;
+}
+
+// Made once, on a worker thread (the encoder can take a moment to start); the page retries until it's ready.
+std::thread g_kaThread;
+std::atomic<bool> g_kaReady{false};
+std::vector<unsigned char> g_keepAwakeVideo;   // written by g_kaThread before g_kaReady, read-only afterwards
+
 void ApplyTablet() {
     g_adb.Stop();
     g_tabSrv.Stop();
     g_tabError.clear();
     if (g_tabCfg.mode == tab::MODE_OFF) return;
     if (!g_tabSrv.Start(g_tabCfg.port, g_tabCfg.mode == tab::MODE_WIFI, g_tabCfg.key, g_tabError)) return;
+    if (g_kaReady) g_tabSrv.SetKeepAwakeVideo(std::vector<unsigned char>(g_keepAwakeVideo));
+    else if (!g_kaThread.joinable())
+        g_kaThread = std::thread([] {
+            HRESULT co = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            g_keepAwakeVideo = MakeKeepAwakeVideo();   // stays empty if this PC has no H.264 encoder: not retried
+            if (SUCCEEDED(co)) CoUninitialize();
+            g_kaReady = true;
+            g_tabSrv.SetKeepAwakeVideo(std::vector<unsigned char>(g_keepAwakeVideo));   // thread-safe; harmless if stopped
+        });
     g_adb.Start(g_tabCfg.port, g_tabCfg.key, g_tabCfg.stayOn);
 }
 
@@ -289,6 +387,7 @@ void DrawTabletOverlay(float W, float H) {
         L"2. Settings › Developer options › turn on “USB debugging”",
         L"3. Plug it in and tap “Allow” — the panel opens by itself",
         L"Tap the panel once for fullscreen. Works without any network.",
+        L"Screen still sleeps? Developer options \u203A \u201cStay awake\u201d (while charging).",
     };
     for (auto* s : steps) {
         Text(s, R(ux, uy, colW, 20), Fmt(12), s == steps[0] ? kInk2 : kMuted);
@@ -310,17 +409,7 @@ void DrawTabletOverlay(float W, float H) {
         Text(L"or type the address below.", R(tx, wy + 20, tw, 20), Fmt(12), kInk2);
         Text(Wide(url), R(wx, wy + q + 8, colW, 22), Fmt(FitSize(Wide(url), 1, 13.f, colW), 1), kInk);
         Btn(R(tx, wy + 60, 130, 28), L"Copy address", false, [url] {
-            if (OpenClipboard(g_hwnd)) {
-                EmptyClipboard();
-                std::wstring w = Wide(url);
-                HGLOBAL hg = GlobalAlloc(GMEM_MOVEABLE, (w.size() + 1) * sizeof(wchar_t));
-                if (hg) {
-                    memcpy(GlobalLock(hg), w.c_str(), (w.size() + 1) * sizeof(wchar_t));
-                    GlobalUnlock(hg);
-                    SetClipboardData(CF_UNICODETEXT, hg);
-                }
-                CloseClipboard();
-            }
+            CopyText(Wide(url));
         });
         Btn(R(tx, wy + 94, 130, 28), L"New secret key", false, [] {
             g_tabCfg.key = tab::RandomKey();

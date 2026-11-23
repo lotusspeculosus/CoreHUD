@@ -108,6 +108,56 @@ void OnUpdateResult(UpdResult* res) {
     InvalidateRect(g_hwnd, nullptr, FALSE);
 }
 
+// ---------------- diagnostics (for bug reports) ----------------
+bool CopyText(const std::wstring& w) {
+    if (!OpenClipboard(g_hwnd)) return false;
+    bool ok = false;
+    EmptyClipboard();
+    HGLOBAL hg = GlobalAlloc(GMEM_MOVEABLE, (w.size() + 1) * sizeof(wchar_t));
+    if (void* p = hg ? GlobalLock(hg) : nullptr) {
+        memcpy(p, w.c_str(), (w.size() + 1) * sizeof(wchar_t));
+        GlobalUnlock(hg);
+        if (SetClipboardData(CF_UNICODETEXT, hg)) { hg = nullptr; ok = true; }   // the clipboard owns it now
+    }
+    if (hg) GlobalFree(hg);
+    CloseClipboard();
+    return ok;
+}
+
+std::wstring BuildDiagnostics() {
+    std::wstring t = L"RigSense " RIGSENSE_VERSION L" (build " RIGSENSE_BUILD L")\r\n";
+    using RtlGetVersion_t = LONG(WINAPI*)(OSVERSIONINFOW*);
+    OSVERSIONINFOW ov{sizeof ov};
+    if (auto f = reinterpret_cast<RtlGetVersion_t>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion"))) f(&ov);
+    t += F(L"Windows %lu.%lu build %lu\r\n", ov.dwMajorVersion, ov.dwMinorVersion, ov.dwBuildNumber);
+    t += L"GPU: " + (g_reg.gpuName.empty() ? std::wstring(L"none found") : g_reg.gpuName) +
+         (g_reg.gpuViaWindows ? (g_reg.gpuFromLhm ? L" (Windows counters + LibreHardwareMonitor)" : L" (Windows counters)") : L" (NVIDIA NVML)") + L"\r\n";
+    if (g_snap.haveGpu)
+        t += F(L"NVIDIA PCI %04X:%04X, subsystem %04X:%04X, known per-pin card: %s\r\n", g_snap.deviceId & 0xFFFF, g_snap.deviceId >> 16,
+               g_snap.subSystemId & 0xFFFF, g_snap.subSystemId >> 16, g_snap.knownCard ? L"yes" : L"no");
+    t += L"Per-pin source: " + (g_snap.sensorEnabled ? g_snap.pinSource : std::wstring(L"none")) +
+         (g_snap.sensorEnabled ? (g_snap.pinsOk ? std::wstring(L" - OK") : L" - ERROR: " + Wide(g_snap.pinError)) : std::wstring()) + L"\r\n";
+    if (g_snap.pinsOk) {
+        t += L"Pins:";
+        for (int i = 0; i < g_snap.pinCount; ++i) t += F(L"  P%d %.2fA %.3fV", i + 1, g_snap.amps[i], g_snap.volts[i]);
+        t += L"\r\n";
+    }
+    t += F(L"Limits: warn %.1f A, limit %.1f A, spread %.1f A, critical action %s\r\n", g_snap.cfg.warnA, g_snap.cfg.limitA,
+           g_snap.cfg.spreadWarnA, g_snap.cfg.criticalAction ? L"shutdown" : L"notify");
+    t += L"LibreHardwareMonitor: " + std::wstring(g_reg.lhmOk ? F(L"%d sensors via %s", g_reg.lhmCount, g_reg.lhmVia.c_str()) :
+                                                   g_reg.lhmProcess ? L"running, no data (web server off?)" : L"not running") + L"\r\n";
+    t += L"HWiNFO Gadget: " + std::wstring(g_reg.gadgetOk ? F(L"%d values", g_reg.gadgetCount) : L"not available") + L"\r\n";
+    t += L"RTSS: " + std::wstring(g_reg.rtssOk ? (g_reg.rtssApp.empty() ? L"running" : (L"running, " + g_reg.rtssApp).c_str()) : L"not running") + L"\r\n";
+    t += F(L"Panel: %dx%d, grid %dx%d, %zu widgets, show on %s\r\n", g_layout.width, g_layout.height, g_layout.cols, g_layout.rows,
+           g_layout.widgets.size(), g_layout.display.c_str());
+    t += L"\r\nSensors (group | name | value | key):\r\n";
+    for (auto& s : g_reg.All()) {
+        t += s.group + L" | " + s.name + L" | " + (s.ok ? F(L"%.*f", s.decimals, s.value) + L" " + s.unit : std::wstring(L"offline")) + L" | " +
+             Wide(s.key) + L"\r\n";
+    }
+    return t;
+}
+
 // ---------------- settings window ----------------
 bool g_settingsOpen = false;
 struct SettingsDraft {
@@ -249,7 +299,15 @@ void DrawSettingsOverlay(float W, float H) {
     Text(L"RigSense " RIGSENSE_VERSION L"  ·  build " RIGSENSE_BUILD, R(xl, yl, colW, 20), Fmt(12.5f), kInk);
     yl += 26;
     Btn(R(xl, yl, 150, ctl), L"GitHub page", false, [] { ShellExecuteW(g_hwnd, L"open", L"https://github.com/lotusspeculosus/RigSense", nullptr, nullptr, SW_SHOWNORMAL); });
-    Btn(R(xl + 158, yl, 200, ctl), L"Open RigSense.ini (advanced)", false,
+    Btn(R(xl + 158, yl, 150, ctl), L"Copy diagnostics", false, [] {
+        if (CopyText(BuildDiagnostics()))
+            MessageBoxW(g_hwnd, L"Diagnostic info copied to the clipboard.\n\nPaste it into your GitHub issue (Ctrl+V). It contains your hardware and "
+                                L"sensor readings, nothing personal.", L"RigSense", MB_ICONINFORMATION);
+        else
+            MessageBoxW(g_hwnd, L"Couldn't open the clipboard (another program is using it). Please try again.", L"RigSense", MB_ICONWARNING);
+    });
+    yl += ctl + 8;
+    Btn(R(xl, yl, 200, ctl), L"Open RigSense.ini (advanced)", false,
         [] { ShellExecuteW(g_hwnd, L"open", L"notepad.exe", (L"\"" + g_ini + L"\"").c_str(), nullptr, SW_SHOWNORMAL); });
 
     // ----- right column -----

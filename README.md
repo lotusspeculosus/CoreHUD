@@ -41,9 +41,9 @@ RigSense is a single small native app (C++, Win32 + Direct2D), not a web or Elec
 
 ## Download & run
 
-1. Go to [**Releases**](../../releases/latest) and download `RigSense-<version>-win64.zip`.
-2. Extract it anywhere, for example `C:\Tools\RigSense`.
-3. Run **`RigSense.exe`**. It needs no installer and no admin rights. Settings, layouts and logs stay in the same folder.
+1. Go to [**Releases**](../../releases/latest) and download **`RigSense.exe`**. That one file is the whole program: the app, the auto-updater and the console tools.
+2. Put it in its own folder, for example `C:\Tools\RigSense`. Settings, layouts and logs are saved next to it.
+3. Run it. It needs no installer and no admin rights.
 
 > Windows SmartScreen may warn because the exe isn't code-signed. Click **More info → Run anyway**, or build the exe yourself from the source (see below).
 
@@ -130,24 +130,31 @@ Click **Settings** in the app. Everything below can be changed there, and **Save
 
 ### Updates & privacy
 
-RigSense checks `api.github.com` for a newer release 20 seconds after starting and then every 6 hours. The request carries only a `RigSense/<version>` user agent, and nothing about your PC is sent. Updates are downloaded only from GitHub hosts over HTTPS. The new `RigSense.exe` must match the SHA-256 in the release's `SHA256SUMS.txt` before it's installed. The old exe is kept as `RigSense.exe.old` until the next start. If RigSense lives in a folder you can't write to (e.g. Program Files), you'll get a notification instead.
+RigSense checks `api.github.com` for a newer release 20 seconds after starting and then every 6 hours. The request carries only a `RigSense/<version>` user agent, and nothing about your PC is sent. Updates are downloaded only from GitHub hosts over HTTPS. The new `RigSense.exe` must match its SHA-256 checksum (the digest GitHub publishes for the file, or the release's `SHA256SUMS.txt`) and be a valid program before it's installed. Updates are never applied while a pin is in a critical state. The old exe is kept as `RigSense.exe.old` until the next start. If RigSense lives in a folder you can't write to (e.g. Program Files), you'll get a notification instead.
 
 ---
 
 ## Build from source
 
-You need the Visual Studio 2022 Build Tools (C++ workload) and a Windows 10/11 SDK. The project has no third-party dependencies.
+You need the Visual Studio 2022 Build Tools (C++ workload) and a Windows 10/11 SDK. The project has no external dependencies (one small QR-code library is included in `src/third_party`).
 
 ```bat
-build.bat              :: builds bin\RigSense.exe and bin\rigsense-cli.exe
+build.bat              :: builds bin\RigSense.exe
 tests\run_tests.bat    :: meter decoders, updater, layout / export / import / fuzz tests
 ```
 
-`rigsense-cli.exe` is a console tool. `rigsense-cli -n 0` streams the on-card per-pin readings, `rigsense-cli --meters` finds and reads an external per-pin meter, and `rigsense-cli --sensors` lists every sensor RigSense can see.
+**Console mode:** `RigSense.exe --cli` runs the console tools. Start it from a terminal in the RigSense folder and pipe the output (`| more`), because Windows doesn't wait for a windowed program otherwise:
 
-If you own a WireView Pro II, PMD2X or MSI Ai1300TS/Ai1600TS, please run `rigsense-cli --meters` and open an issue with the output (working or not). That's how these sources move from experimental to verified.
+```bat
+RigSense.exe --cli --sensors | more    :: every sensor RigSense can see
+RigSense.exe --cli --meters | more     :: find and read an external per-pin meter
+RigSense.exe --cli -n 20 | more        :: 20 on-card per-pin readings
+RigSense.exe --cli --sensors > sensors.txt
+```
 
-**Releasing (maintainers):** bump the numbers in `src/version.h`, build, then publish a GitHub release tagged `vX.Y.Z` with these assets: `RigSense.exe`, `rigsense-cli.exe`, `SHA256SUMS.txt` (`<sha256>  <file name>` per line), and the zip. Installed copies pick it up automatically.
+If you own a WireView Pro II, PMD2X or MSI Ai1300TS/Ai1600TS, please run `RigSense.exe --cli --meters | more` and open an issue with the output (working or not). That's how these sources move from experimental to verified.
+
+**Releasing (maintainers):** bump the numbers in `src/version.h`, build, then publish a GitHub release tagged `vX.Y.Z` with two assets: `RigSense.exe` and `SHA256SUMS.txt` (`<sha256>  RigSense.exe`; RigSense 1.2.x/1.3.0 need it to update). Installed copies pick it up automatically.
 
 ### How the per-pin sensor is read
 
@@ -157,7 +164,7 @@ ROG Astral cards have an ITE IT8915FN chip on the GPU's own I²C bus. RigSense r
 
 ## Reporting bugs & ideas
 
-Open an [issue](../../issues/new/choose) and pick a form: **Bug report**, **Per-pin meter test report** (WireView Pro II / PMD2X / MSI PSU owners, please!) or **Feature request**. Report security problems privately via [Report a vulnerability](../../security/advisories/new).
+Open an [issue](../../issues/new/choose) and pick a form. **Settings → Copy diagnostics** copies your RigSense version, GPU, per-pin source and sensor list, ready to paste into the report. Forms: **Bug report**, **Per-pin meter test report** (WireView Pro II / PMD2X / MSI PSU owners, please!) or **Feature request**. Report security problems privately via [Report a vulnerability](../../security/advisories/new).
 
 New issues get an automatic first look: an AI assistant (Claude) checks the report against the code, labels it, and replies with what it found or which details are missing. For confirmed bugs it may propose a fix as a pull request. Nothing is merged without the maintainer's review. Every pull request is compiled and tested automatically on Windows ("Build & test" workflow), and its build can be downloaded from the run's artifacts, so you can try a fix before it's released.
 
@@ -175,18 +182,27 @@ Open **Sensor panel → Tablet / phone…** and pick a mode:
 |---|---|---|
 | How | RigSense connects with Google's free `adb` tool (install it from the dialog or the Components check) and opens the panel on the tablet automatically | Scan the QR code with the tablet, or type the address |
 | Network | None. The tablet reaches RigSense through the cable only | Same home network. The address contains a secret key, so other devices can't view the panel |
-| Screen stays on | Yes, while plugged in (RigSense can keep it awake) | Use the tablet's own screen-timeout or "stay awake" setting |
+| Screen stays on | Yes. RigSense keeps it awake while plugged in | Yes. The page plays a tiny invisible video, which stops the screen from timing out |
 | Works with | Android 5 or newer | Android, iPad/iPhone, anything with a browser |
 
 **One-time USB setup on the tablet:** *Settings → About tablet →* tap **Build number** 7 times, then *Settings → Developer options →* turn on **USB debugging**. Plug the tablet in and tap **Allow**, and the panel opens. Tap it once for fullscreen. In Chrome, *Add to Home screen* gives you an app-like icon.
 
 The tablet can only **view** the panel; it can't control your PC. The panel updates twice per second while a device is watching and stops rendering when nobody is (frames are about 50–100 KB). When the device is rotated relative to your design, the design is shown fitted. **Design for this tablet** in the dialog, or **Detect screens** in the editor, makes a layout that fills the device exactly.
 
+**Screen still turns off?** On Android, *Developer options → Stay awake* keeps the screen on while charging. Some tablets also need their battery saver turned off for the browser.
+
 Settings (`[Tablet]` in `RigSense.ini`): `Mode` = `off` / `usb` / `wifi` (USB + Wi-Fi), `Port` = 8086, `Key` (the secret; **New secret key** in the dialog replaces it), `StayOn` = 1.
 
 ---
 
 ## Changelog
+
+**1.3.1**
+- **One file:** RigSense is now a single `RigSense.exe`. The console tools are built in (`RigSense.exe --cli`), and updates download only that file. There's no separate CLI exe and no zip.
+- **Tablet screen stays on**, over Wi-Fi too: the panel page plays a tiny invisible, muted video that RigSense makes with Windows' own encoder (1.5 KB, Baseline H.264 for old tablets). Range requests are supported for iPad/iPhone.
+- **Settings → Copy diagnostics** for bug reports.
+- Updater checks the SHA-256 digest that GitHub publishes for the release file, with `SHA256SUMS.txt` as the fallback.
+- Fixed: the build label showed "??" instead of "·".
 
 **1.3.0**
 - **Tablet / phone panel:** RigSense serves the panel to any browser, over USB (`adb reverse`, no network) or Wi-Fi (QR code, secret key). It renders at the device's exact resolution, works on old Android and iOS browsers, has a fullscreen home-screen shortcut, and can keep the screen awake over USB. Read-only, and off by default.

@@ -66,6 +66,7 @@ std::vector<std::wstring> FindSerialPorts() {
 bool OverlappedIo(HANDLE h, bool write, void* buf, DWORD len, DWORD timeoutMs) {
     OVERLAPPED ov{};
     ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!ov.hEvent) return false;
     DWORD done = 0;
     BOOL ok = write ? WriteFile(h, buf, len, nullptr, &ov) : ReadFile(h, buf, len, nullptr, &ov);
     if (!ok && GetLastError() != ERROR_IO_PENDING) { CloseHandle(ov.hEvent); return false; }

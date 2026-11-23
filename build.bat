@@ -1,5 +1,5 @@
 @echo off
-rem Builds RigSense.exe (GUI) and rigsense-cli.exe (console) with MSVC.
+rem Builds RigSense.exe - one program: the app, the updater and the console mode (RigSense.exe --cli).
 setlocal
 cd /d "%~dp0"
 if defined VSCMD_VER goto :build
@@ -20,9 +20,8 @@ for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd"') d
 >> build\buildinfo.h echo #define RIGSENSE_BUILD_DATE "%BDATE%"
 
 set CFLAGS=/nologo /std:c++17 /O2 /MT /EHsc /W3 /utf-8 /DUNICODE /D_UNICODE /D_CRT_SECURE_NO_WARNINGS /Ibuild /Fobuild\
-set LIBS=user32.lib gdi32.lib shell32.lib advapi32.lib ole32.lib oleaut32.lib wbemuuid.lib crypt32.lib dxgi.lib pdh.lib setupapi.lib hid.lib winhttp.lib bcrypt.lib ws2_32.lib iphlpapi.lib
-cl %CFLAGS% src\cli.cpp src\sensors.cpp src\gpu_generic.cpp src\pinsources.cpp src\nvapi_gpu.cpp src\nvml_gpu.cpp /Fe:bin\rigsense-cli.exe /link /SUBSYSTEM:CONSOLE %LIBS% || exit /b 1
+set LIBS=user32.lib gdi32.lib shell32.lib advapi32.lib ole32.lib oleaut32.lib wbemuuid.lib crypt32.lib dxgi.lib pdh.lib setupapi.lib hid.lib winhttp.lib bcrypt.lib ws2_32.lib iphlpapi.lib mfplat.lib mfreadwrite.lib mfuuid.lib
 rc /nologo /Isrc /fo build\app.res src\app.rc || exit /b 1
-cl %CFLAGS% src\app.cpp src\monitor.cpp src\pinsources.cpp src\panel.cpp src\sensors.cpp src\gpu_generic.cpp src\components.cpp src\updater.cpp src\tablet.cpp src\third_party\qrcodegen\qrcodegen.cpp src\nvapi_gpu.cpp src\nvml_gpu.cpp build\app.res /Fe:bin\RigSense.exe /link /SUBSYSTEM:WINDOWS d2d1.lib dwrite.lib dwmapi.lib windowscodecs.lib comdlg32.lib %LIBS% || exit /b 1
+cl %CFLAGS% src\app.cpp src\cli.cpp src\monitor.cpp src\pinsources.cpp src\panel.cpp src\sensors.cpp src\gpu_generic.cpp src\components.cpp src\updater.cpp src\tablet.cpp src\third_party\qrcodegen\qrcodegen.cpp src\nvapi_gpu.cpp src\nvml_gpu.cpp build\app.res /Fe:bin\RigSense.exe /link /SUBSYSTEM:WINDOWS d2d1.lib dwrite.lib dwmapi.lib windowscodecs.lib comdlg32.lib %LIBS% delayimp.lib /DELAYLOAD:mfplat.dll /DELAYLOAD:mfreadwrite.dll || exit /b 1
 echo.
-echo Built bin\RigSense.exe and bin\rigsense-cli.exe (%GITREV%, %BDATE%)
+echo Built bin\RigSense.exe (%GITREV%, %BDATE%)

@@ -26,6 +26,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: RigSense-${{ github.sha }}
-          path: |
-            bin/RigSense.exe
-            bin/rigsense-cli.exe
+          path: bin/RigSense.exe

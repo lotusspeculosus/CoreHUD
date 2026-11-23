@@ -1,7 +1,8 @@
 // Auto-update from GitHub Releases (github.com/lotusspeculosus/RigSense).
 //  - Check: GET https://api.github.com/repos/<repo>/releases/latest (tag "vX.Y.Z", drafts/pre-releases ignored)
-//  - Download: the release assets RigSense.exe, rigsense-cli.exe and SHA256SUMS.txt (HTTPS, GitHub hosts only)
-//  - Verify: SHA-256 of every downloaded exe must match SHA256SUMS.txt, and the exe must be a valid PE file
+//  - Download: the single release asset RigSense.exe (everything is in one program; HTTPS, GitHub hosts only)
+//  - Verify: its SHA-256 must match the digest GitHub publishes for the asset (or SHA256SUMS.txt as a fallback,
+//    which releases keep for older RigSense versions), and it must be a valid PE file
 //  - Apply: rename the running exe to *.old (Windows allows renaming a running exe), move the new one in,
 //    start it with --wait-pid, exit. Leftover *.old files are removed on the next start.
 // Only requests to GitHub are made; nothing about the PC is sent (just a "RigSense/<version>" user agent).
@@ -18,7 +19,8 @@ struct Release {
     std::string version;      // "1.2.1"
     std::string pageUrl;      // html_url
     std::wstring notes;       // release body (first lines)
-    std::string exeUrl, cliUrl, sumsUrl;
+    std::string exeUrl, sumsUrl;
+    std::string exeSha;       // GitHub's asset digest ("sha256:<hex>" -> hex), empty if not provided
 };
 
 int CompareVersions(const std::string& a, const std::string& b);   // <0 a older, 0 same, >0 a newer
