@@ -83,6 +83,7 @@ uint32_t AccentColor(int i) { return kAccents[std::clamp(i, 0, kColorCount - 1)]
 uint32_t PanelBgColor(int i) { return kPanelBgs[std::clamp(i, 0, kPanelBgCount - 1)]; }
 
 std::wstring DefaultPath() { return mon::ExeDir() + L"\\panel.txt"; }
+std::wstring LayoutsDir() { return mon::ExeDir() + L"\\layouts"; }
 
 bool Save(const std::wstring& path, const Layout& l) {
     FILE* f = _wfopen(path.c_str(), L"wb");
@@ -91,6 +92,11 @@ bool Save(const std::wstring& path, const Layout& l) {
     fprintf(f, "panel width=%d height=%d cols=%d rows=%d gap=%d radius=%d bg=%06X dim=%d autoshow=%d snap=%d display=%s\n", l.width,
             l.height, l.cols, l.rows, l.gap, l.radius, l.bgColor, l.bgDim, l.autoShow ? 1 : 0, l.snapOnDrop ? 1 : 0, U8(l.display).c_str());
     fprintf(f, "image text=%s\n", U8(l.bgImage).c_str());
+    if (!l.name.empty()) {
+        std::string n = U8(l.name);
+        for (auto& c : n) if (c == '\r' || c == '\n') c = ' ';
+        fprintf(f, "name text=%s\n", n.c_str());
+    }
     for (auto& w : l.widgets) {
         fprintf(f,
                 "widget type=%s sensor=%s x=%d y=%d w=%d h=%d color=%d bg=%s scale=%d min=%s max=%s warn=%s crit=%s dec=%d "
@@ -127,6 +133,8 @@ bool Load(const std::wstring& path, Layout& out) {
             }
         } else if (line.rfind("image ", 0) == 0) {
             for (auto& [k, v] : Tokens(line)) if (k == "text") l.bgImage = W16(v);
+        } else if (line.rfind("name ", 0) == 0) {
+            for (auto& [k, v] : Tokens(line)) if (k == "text") l.name = W16(v);
         } else if (line.rfind("widget ", 0) == 0) {
             Widget w;
             for (auto& [k, v] : Tokens(line)) {

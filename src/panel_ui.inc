@@ -1,8 +1,7 @@
 // Sensor panel: renderer, editor tab and the panel window.
 // Included inside app.cpp's anonymous namespace (uses its drawing helpers).
 
-panel::Layout g_layout;
-std::wstring g_layoutPath;
+panel::Layout g_layout;          // working copy of the layout open in the editor (= g_slots[g_edit]); SaveLayout() stores it
 std::unordered_map<std::string, std::deque<std::pair<double, float>>> g_ghist;   // graph history per sensor key
 
 int g_sel = -1;                 // selected widget
@@ -16,79 +15,132 @@ std::wstring g_search;
 
 // text fields (immediate mode)
 constexpr int HIT_FIELD = 10000;
-enum FieldId { F_WIDTH = 1, F_HEIGHT, F_LABEL, F_MIN, F_MAX, F_WARN, F_CRIT, F_SEARCH };
+enum FieldId { F_WIDTH = 1, F_HEIGHT, F_LABEL, F_MIN, F_MAX, F_WARN, F_CRIT, F_SEARCH, F_SLOTNAME };
 int g_focus = 0;
 std::wstring g_editBuf;
 int g_commitId = 0;
 std::wstring g_commitText;
 std::map<int, std::wstring> g_fieldInit;
 
-// panel window
-HWND g_panelWnd = nullptr;
-bool g_panelVirtual = false;    // virtual panel = floating "device" window with a bezel
-// When the fullscreen display has a clearly different shape than the design, the panel window renders an
-// adapted copy (proportionally regridded). The saved design (g_layout / panel.txt) is never modified.
-bool g_hasAdapted = false;
-panel::Layout g_adapted;
-float g_virtScale = 1.f;
-bool g_virtTop = false;
-constexpr float kBezel = 18.f, kBezelBottom = 30.f;
-ID2D1HwndRenderTarget* g_prt = nullptr;
-ID2D1SolidColorBrush* g_pbr = nullptr;
 struct BgBmp { ID2D1Bitmap* bmp = nullptr; std::wstring path; bool failed = false; };
-BgBmp g_bmpMain, g_bmpPanel;
+BgBmp g_bmpMain;
 BgBmp* g_curBmp = &g_bmpMain;
 IWICImagingFactory* g_wic = nullptr;
 ID2D1StrokeStyle* g_round = nullptr;
 
+// ---- layouts ("save slots"): layouts\panel-<id>.txt, each with its own display and its own panel window ----
+// Any number can be open at the same time (one fullscreen per display, plus floating virtual windows);
+// the tablet shows the layout picked in the Tablet dialog.
+struct Slot {
+    int id = 0;
+    std::wstring path;
+    panel::Layout layout;      // saved design; for the layout open in the editor, g_layout is the live copy
+    HWND wnd = nullptr;
+    bool virt = false;         // virtual panel = floating "device" window with a bezel
+    float virtScale = 1.f;
+    bool virtTop = false;
+    std::wstring snapDev;      // display picked by dragging / the menu (applied via WM_APP_PANEL_SNAP)
+    ID2D1HwndRenderTarget* prt = nullptr;
+    ID2D1SolidColorBrush* pbr = nullptr;
+    BgBmp bmp;
+};
+std::vector<std::unique_ptr<Slot>> g_slots;
+int g_edit = 0;                // index of the layout open in the editor
+constexpr size_t kMaxSlots = 16;
+constexpr float kBezel = 18.f, kBezelBottom = 30.f;
+
+Slot& EditSlot() { return *g_slots[size_t(g_edit)]; }
+bool IsEdit(const Slot& s) { return &s == g_slots[size_t(g_edit)].get(); }
+const panel::Layout& LayoutOf(const Slot& s) { return IsEdit(s) ? g_layout : s.layout; }
+panel::Layout& MutLayout(Slot& s) { return IsEdit(s) ? g_layout : s.layout; }
+Slot* SlotById(int id) {
+    for (auto& s : g_slots) if (s->id == id) return s.get();
+    return nullptr;
+}
+int SlotIndex(const Slot* p) {
+    for (size_t i = 0; i < g_slots.size(); ++i) if (g_slots[i].get() == p) return int(i);
+    return -1;
+}
+std::wstring SlotName(const Slot& s) {
+    const auto& n = LayoutOf(s).name;
+    return n.empty() ? F(L"Layout %d", s.id) : n;
+}
+
 struct MonInfo { std::wstring dev; RECT rc; bool primary; std::wstring name; };
 std::vector<MonInfo> g_mons;
-constexpr UINT WM_APP_PANEL_SNAP = WM_APP + 3;   // posted to the main window: wParam 0 = fullscreen on g_snapDev, 1 = back to window
-std::wstring g_snapDev;
+constexpr UINT WM_APP_PANEL_SNAP = WM_APP + 3;   // posted to the main window: wParam 0 = fullscreen on slot.snapDev, 1 = back to window; lParam = slot id
 
 double NowSec() { return GetTickCount64() / 1000.0; }
 
+// ---- connector alarm on every panel + tablet ----
+bool g_alarmPanels = true;          // [Alarm] Panels
+bool g_alarmTabletSound = true;     // [Alarm] TabletSound
+ULONGLONG g_alarmTestUntil = 0;     // Settings > Test alarm
+void LoadAlarmCfg() {
+    g_alarmPanels = GetPrivateProfileIntW(L"Alarm", L"Panels", 1, g_ini.c_str()) != 0;
+    g_alarmTabletSound = GetPrivateProfileIntW(L"Alarm", L"TabletSound", 1, g_ini.c_str()) != 0;
+}
+// 2 = a pin is over its limit, 1 = test alarm, 0 = none
+int AlarmActive() {
+    if (g_snap.pinsOk)
+        for (int i = 0; i < g_snap.pinCount && i < pins::kMaxPins; ++i)
+            if (g_snap.pinState[i] == 2) return 2;
+    return GetTickCount64() < g_alarmTestUntil ? 1 : 0;
+}
+
 // ---- virtual panel window sizing (pixels) ----
-float FitVirtualScale() {
+float FitVirtualScale(const Slot& s) {
+    const auto& L = LayoutOf(s);
     RECT wa;
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
-    float k = std::min((wa.right - wa.left - 2 * kBezel - 40) / g_layout.width, (wa.bottom - wa.top - kBezel - kBezelBottom - 40) / g_layout.height);
+    float k = std::min((wa.right - wa.left - 2 * kBezel - 40) / L.width, (wa.bottom - wa.top - kBezel - kBezelBottom - 40) / L.height);
     return std::clamp(k, 0.1f, 4.f);
 }
-SIZE VirtualWindowSize() {
-    return {LONG(std::lround(g_layout.width * g_virtScale + 2 * kBezel)), LONG(std::lround(g_layout.height * g_virtScale + kBezel + kBezelBottom))};
+SIZE VirtualWindowSize(const Slot& s) {
+    const auto& L = LayoutOf(s);
+    return {LONG(std::lround(L.width * s.virtScale + 2 * kBezel)), LONG(std::lround(L.height * s.virtScale + kBezel + kBezelBottom))};
 }
-void SetVirtualScale(float k) {
-    if (!g_panelWnd || !g_panelVirtual) return;
-    g_virtScale = std::clamp(k, 0.1f, 4.f);
+void SetVirtualScale(Slot& s, float k) {
+    if (!s.wnd || !s.virt) return;
+    s.virtScale = std::clamp(k, 0.1f, 4.f);
     RECT r;
-    GetWindowRect(g_panelWnd, &r);
-    SIZE sz = VirtualWindowSize();
+    GetWindowRect(s.wnd, &r);
+    SIZE sz = VirtualWindowSize(s);
     int cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
-    SetWindowPos(g_panelWnd, nullptr, cx - sz.cx / 2, cy - sz.cy / 2, sz.cx, sz.cy, SWP_NOZORDER | SWP_NOACTIVATE);
-    InvalidateRect(g_panelWnd, nullptr, FALSE);
+    SetWindowPos(s.wnd, nullptr, cx - sz.cx / 2, cy - sz.cy / 2, sz.cx, sz.cy, SWP_NOZORDER | SWP_NOACTIVATE);
+    InvalidateRect(s.wnd, nullptr, FALSE);
 }
-void ToggleVirtualTop() {
-    g_virtTop = !g_virtTop;
-    if (g_panelWnd) SetWindowPos(g_panelWnd, g_virtTop ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+void ToggleVirtualTop(Slot& s) {
+    s.virtTop = !s.virtTop;
+    if (s.wnd) SetWindowPos(s.wnd, s.virtTop ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
-void RefreshAdapted();
-// How the design is shown on a W x H surface (case display, tablet):
+// How a design is shown on a W x H surface (case display, tablet):
 //   same shape (within 10%)          -> as designed, scaled
 //   rotated (portrait vs landscape)  -> letterboxed: the design is kept intact and fitted, centred
-//   other shape, same orientation    -> a proportionally regridded copy (see RefreshAdapted / AdaptedFor)
-bool LetterboxRect(float W, float H, D2D1_RECT_F& r);
-void RenderLetterboxed(float W, float H, const D2D1_RECT_F& r);
+//   other shape, same orientation    -> a proportionally regridded copy (AdaptedLayout); the design itself is untouched
+bool LetterboxRect(const panel::Layout& L, float W, float H, D2D1_RECT_F& r);
+void RenderOnSurface(const panel::Layout& L, float W, float H);
 
+void RepaintSlot(Slot& s) {
+    if (!s.wnd) return;
+    if (s.virt) SetVirtualScale(s, s.virtScale);   // the panel size may have changed
+    InvalidateRect(s.wnd, nullptr, FALSE);
+}
+
+// Stores the editor's working copy into its layout file.
 void SaveLayout() {
     panel::Clamp(g_layout);
-    panel::Save(g_layoutPath, g_layout);
-    RefreshAdapted();
-    if (g_panelWnd) {
-        if (g_panelVirtual) SetVirtualScale(g_virtScale);   // panel size may have changed
-        InvalidateRect(g_panelWnd, nullptr, FALSE);
-    }
+    Slot& s = EditSlot();
+    s.layout = g_layout;
+    panel::Save(s.path, g_layout);
+    RepaintSlot(s);
+}
+void SaveSlot(Slot& s) {
+    if (IsEdit(s)) { SaveLayout(); return; }
+    panel::Clamp(s.layout);
+    panel::Save(s.path, s.layout);
+    RepaintSlot(s);
 }
 
 void EnumMonitors() {
@@ -202,12 +254,12 @@ void IdentifyDisplays() {
 
 void ReleaseBmp(BgBmp& b) { SafeRelease(b.bmp); b.path.clear(); b.failed = false; }
 
-ID2D1Bitmap* BackgroundBitmap() {
+ID2D1Bitmap* BackgroundBitmap(const panel::Layout& L) {
     BgBmp& b = *g_curBmp;
-    if (g_layout.bgImage.empty()) { ReleaseBmp(b); return nullptr; }
-    if (b.path == g_layout.bgImage && (b.bmp || b.failed)) return b.bmp;
+    if (L.bgImage.empty()) { ReleaseBmp(b); return nullptr; }
+    if (b.path == L.bgImage && (b.bmp || b.failed)) return b.bmp;
     ReleaseBmp(b);
-    b.path = g_layout.bgImage;
+    b.path = L.bgImage;
     if (!g_wic) CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&g_wic));
     IWICBitmapDecoder* dec = nullptr;
     IWICBitmapFrameDecode* fr = nullptr;
@@ -506,45 +558,245 @@ void DrawWidget(const panel::Widget& w, const D2D1_RECT_F& r, float s, float rad
     }
 }
 
-D2D1_RECT_F WidgetRect(const panel::Widget& w, float W, float H) {
-    float s = std::min(W / g_layout.width, H / g_layout.height);
-    float gap = g_layout.gap * s;
-    float cw = (W - gap) / g_layout.cols, ch = (H - gap) / g_layout.rows;
+D2D1_RECT_F WidgetRect(const panel::Layout& L, const panel::Widget& w, float W, float H) {
+    float s = std::min(W / L.width, H / L.height);
+    float gap = L.gap * s;
+    float cw = (W - gap) / L.cols, ch = (H - gap) / L.rows;
     return D2D1::RectF(w.x * cw + gap, w.y * ch + gap, (w.x + w.w) * cw, (w.y + w.h) * ch);
 }
 
-void RenderPanel(float W, float H, bool edit) {
-    float s = std::min(W / g_layout.width, H / g_layout.height);
-    Fill(D2D1::RectF(0, 0, W, H), g_layout.bgColor);
-    if (ID2D1Bitmap* bmp = BackgroundBitmap()) {
+void RenderPanel(const panel::Layout& L, float W, float H, bool edit) {
+    float s = std::min(W / L.width, H / L.height);
+    Fill(D2D1::RectF(0, 0, W, H), L.bgColor);
+    if (ID2D1Bitmap* bmp = BackgroundBitmap(L)) {
         auto bs = bmp->GetSize();
         float k = std::max(W / bs.width, H / bs.height);   // cover
         float dw = bs.width * k, dh = bs.height * k;
         g_rt->PushAxisAlignedClip(D2D1::RectF(0, 0, W, H), D2D1_ANTIALIAS_MODE_ALIASED);
         g_rt->DrawBitmap(bmp, D2D1::RectF((W - dw) / 2, (H - dh) / 2, (W + dw) / 2, (H + dh) / 2), 1.f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         g_rt->PopAxisAlignedClip();
-        if (g_layout.bgDim > 0) Fill(D2D1::RectF(0, 0, W, H), 0x000000, 0, g_layout.bgDim / 100.f);
+        if (L.bgDim > 0) Fill(D2D1::RectF(0, 0, W, H), 0x000000, 0, L.bgDim / 100.f);
     }
     if (edit) {
-        float gap = g_layout.gap * s;
-        float cw = (W - gap) / g_layout.cols, ch = (H - gap) / g_layout.rows;
-        for (int x = 0; x < g_layout.cols; ++x)
-            for (int y = 0; y < g_layout.rows; ++y)
-                Stroke(D2D1::RectF(x * cw + gap, y * ch + gap, (x + 1) * cw, (y + 1) * ch), kInk, g_layout.radius * s, 1.f / g_previewScale, 0.07f);
+        float gap = L.gap * s;
+        float cw = (W - gap) / L.cols, ch = (H - gap) / L.rows;
+        for (int x = 0; x < L.cols; ++x)
+            for (int y = 0; y < L.rows; ++y)
+                Stroke(D2D1::RectF(x * cw + gap, y * ch + gap, (x + 1) * cw, (y + 1) * ch), kInk, L.radius * s, 1.f / g_previewScale, 0.07f);
     }
-    for (auto& w : g_layout.widgets) {
-        D2D1_RECT_F r = WidgetRect(w, W, H);
+    for (auto& w : L.widgets) {
+        D2D1_RECT_F r = WidgetRect(L, w, W, H);
         g_rt->PushAxisAlignedClip(r, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-        DrawWidget(w, r, s, g_layout.radius * s);
+        DrawWidget(w, r, s, L.radius * s);
         g_rt->PopAxisAlignedClip();
     }
-    if (edit && g_sel >= 0 && g_sel < int(g_layout.widgets.size())) {
-        D2D1_RECT_F r = WidgetRect(g_layout.widgets[size_t(g_sel)], W, H);
+    if (edit && g_sel >= 0 && g_sel < int(L.widgets.size())) {
+        D2D1_RECT_F r = WidgetRect(L, L.widgets[size_t(g_sel)], W, H);
         float lw = 2.f / g_previewScale;
-        Stroke(r, kAccent, g_layout.radius * s, lw);
+        Stroke(r, kAccent, L.radius * s, lw);
         float hs = 14.f / g_previewScale;
         Fill(D2D1::RectF(r.right - hs, r.bottom - hs, r.right, r.bottom), kAccent, 3.f / g_previewScale);
     }
+}
+
+// Connector alarm drawn over a panel surface (case display, virtual panel, tablet frame): the whole panel
+// pulses red with a big banner naming the pin, so it can't be missed even while playing.
+void DrawAlarmOverlay(float W, float H) {
+    int a = AlarmActive();
+    if (!a || (a == 2 && !g_alarmPanels)) return;
+    bool on = (GetTickCount64() / 500) % 2 == 0;
+    D2D1_RECT_F all = D2D1::RectF(0, 0, W, H);
+    Fill(all, kCrit, 0, on ? 0.42f : 0.16f);
+    float m = std::min(W, H);
+    Stroke(all, kCrit, 0, std::max(4.f, m * 0.03f), on ? 1.f : 0.55f);
+    std::wstring title, detail, hint;
+    if (a == 2) {
+        int worst = -1;
+        for (int i = 0; i < g_snap.pinCount && i < pins::kMaxPins; ++i)
+            if (g_snap.pinState[i] == 2 && (worst < 0 || g_snap.amps[i] > g_snap.amps[worst])) worst = i;
+        if (worst < 0) worst = 0;   // (AlarmActive found one; keeps the analyzer and any race safe)
+        int n = 0;
+        for (int i = 0; i < g_snap.pinCount && i < pins::kMaxPins; ++i) n += g_snap.pinState[i] == 2;
+        title = L"⚠ 12V-2x6 OVER LIMIT";
+        detail = worst < 6 ? F(L"Pin %d: %.2f A  (limit %.1f A)", worst + 1, g_snap.amps[worst], g_snap.cfg.limitA)
+                           : F(L"Connector 2 pin %d: %.2f A  (limit %.1f A)", worst - 5, g_snap.amps[worst], g_snap.cfg.limitA);
+        if (n > 1) detail += F(L"  ·  %d pins over", n);
+        hint = L"Lower the GPU load now — then check the connector";
+    } else {
+        title = L"TEST ALARM";
+        detail = L"This is how a connector alarm looks on this screen";
+        hint = L"It disappears by itself in a few seconds";
+    }
+    float bw = W * 0.86f, bh = std::min(H * 0.8f, std::max(H * 0.5f, bw * 0.28f));
+    D2D1_RECT_F box = D2D1::RectF((W - bw) / 2, (H - bh) / 2, (W + bw) / 2, (H + bh) / 2);
+    float rad = m * 0.03f;
+    Fill(box, 0x1A0606, rad, 0.93f);
+    Stroke(box, kCrit, rad, std::max(2.f, m * 0.008f));
+    float tw = bw * 0.9f;
+    float ts = FitSize(title, 2, bh * 0.30f, tw), ds = FitSize(detail, 1, bh * 0.16f, tw), hs = FitSize(hint, 0, bh * 0.11f, tw);
+    float total = ts * 1.25f + ds * 1.3f + hs * 1.3f;
+    float y = box.top + (bh - total) / 2;
+    Text(title, D2D1::RectF(box.left, y, box.right, y + ts * 1.25f), Fmt(ts, 2, 1), on ? 0xFFFFFF : 0xFFB4B4);
+    y += ts * 1.25f;
+    Text(detail, D2D1::RectF(box.left, y, box.right, y + ds * 1.3f), Fmt(ds, 1, 1), 0xFFFFFF);
+    y += ds * 1.3f;
+    Text(hint, D2D1::RectF(box.left, y, box.right, y + hs * 1.3f), Fmt(hs, 0, 1), 0xFFD0D0);
+}
+
+// ---------- layouts (save slots) ----------
+void CommitFocus();
+void ShowPanel(Slot& s, bool on);
+bool IsTabletSlot(const Slot& s);   // tablet_ui.inc
+
+std::wstring DisplayShort(const std::wstring& dev) {
+    int i = MonitorIndex(dev);
+    if (i < 0) return L"display not connected";
+    return F(L"Display %d", i + 1);
+}
+// Where a layout is visible right now ("Display 2", "window", "tablet", ...)
+std::wstring SlotWhere(const Slot& s) {
+    std::wstring w;
+    if (s.wnd) w = s.virt ? L"window" : DisplayShort(LayoutOf(s).display);
+    if (IsTabletSlot(s)) w += (w.empty() ? L"" : L" + ") + std::wstring(L"tablet");
+    return w;
+}
+
+void RememberEditSlot() {
+    WritePrivateProfileStringW(L"Panels", L"Edit", std::to_wstring(EditSlot().id).c_str(), g_ini.c_str());
+}
+
+void SelectSlot(int idx) {
+    if (idx < 0 || idx >= int(g_slots.size()) || idx == g_edit) return;
+    CommitFocus();
+    g_focus = 0;
+    SaveLayout();                       // the old one is stored as it is
+    g_edit = idx;
+    g_layout = EditSlot().layout;
+    g_sel = -1;
+    RememberEditSlot();
+}
+
+std::wstring SlotPath(int id) { return panel::LayoutsDir() + F(L"\\panel-%d.txt", id); }
+
+// Loads layouts\panel-*.txt; the first start after updating moves the old single panel.txt in as "My panel".
+void LoadSlots() {
+    std::wstring dir = panel::LayoutsDir();
+    CreateDirectoryW(dir.c_str(), nullptr);
+    std::vector<int> ids;
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((dir + L"\\panel-*.txt").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            int id = _wtoi(fd.cFileName + 6);
+            if (id > 0 && !_wcsicmp(fd.cFileName, F(L"panel-%d.txt", id).c_str())) ids.push_back(id);
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    std::sort(ids.begin(), ids.end());
+    for (int id : ids) {
+        auto s = std::make_unique<Slot>();
+        s->id = id;
+        s->path = SlotPath(id);
+        if (!panel::Load(s->path, s->layout)) continue;
+        if (s->layout.name.empty()) s->layout.name = F(L"Layout %d", id);
+        g_slots.push_back(std::move(s));
+        if (g_slots.size() >= kMaxSlots) break;
+    }
+    if (g_slots.empty()) {
+        auto s = std::make_unique<Slot>();
+        s->id = 1;
+        s->path = SlotPath(1);
+        if (!panel::Load(panel::DefaultPath(), s->layout)) {   // panel.txt from 1.3 and older stays as a backup
+            s->layout = panel::DefaultLayout();
+            s->layout.display = L"virtual";
+        }
+        if (s->layout.name.empty()) s->layout.name = L"My panel";
+        panel::Save(s->path, s->layout);
+        g_slots.push_back(std::move(s));
+    }
+    int editId = int(GetPrivateProfileIntW(L"Panels", L"Edit", g_slots[0]->id, g_ini.c_str()));
+    g_edit = std::max(0, SlotIndex(SlotById(editId)));
+    g_layout = EditSlot().layout;
+}
+
+// Ids are never reused (a deleted layout's id could still be remembered, e.g. as the tablet's layout).
+int NextSlotId() {
+    int id = int(GetPrivateProfileIntW(L"Panels", L"NextId", 1, g_ini.c_str()));
+    for (auto& s : g_slots) id = std::max(id, s->id + 1);
+    return id;
+}
+
+// New layout (empty starter or a copy of the current one) - it opens in the editor.
+void AddSlot(const panel::Layout* copyOf, const std::wstring& name) {
+    if (g_slots.size() >= kMaxSlots) {
+        MessageBoxW(g_hwnd, F(L"You can have up to %zu layouts. Delete one first.", kMaxSlots).c_str(), L"RigSense", MB_ICONINFORMATION);
+        return;
+    }
+    SaveLayout();
+    auto s = std::make_unique<Slot>();
+    s->id = NextSlotId();
+    s->path = SlotPath(s->id);
+    WritePrivateProfileStringW(L"Panels", L"NextId", std::to_wstring(s->id + 1).c_str(), g_ini.c_str());
+    if (copyOf) s->layout = *copyOf;
+    else {
+        s->layout = panel::DefaultLayout();
+        s->layout.width = g_layout.width;     // same screen size as the current one: usually what you want
+        s->layout.height = g_layout.height;
+        int c, r;
+        panel::AutoGrid(s->layout.width, s->layout.height, c, r);
+        panel::Regrid(s->layout, c, r);
+    }
+    s->layout.name = name;
+    s->layout.display = L"virtual";           // never two layouts fullscreen on one display
+    s->layout.autoShow = false;
+    panel::Save(s->path, s->layout);
+    g_slots.push_back(std::move(s));
+    SelectSlot(int(g_slots.size()) - 1);
+}
+
+void DeleteEditSlot() {
+    if (g_slots.size() <= 1) {
+        MessageBoxW(g_hwnd, L"This is your only layout - it can't be deleted. Use “Reset layout” to start over.", L"RigSense", MB_ICONINFORMATION);
+        return;
+    }
+    Slot& s = EditSlot();
+    if (MessageBoxW(g_hwnd, (L"Delete the layout “" + SlotName(s) + L"”?\n\nIt is moved to layouts\\deleted, so you can still get it back.").c_str(),
+                    L"RigSense", MB_OKCANCEL | MB_ICONQUESTION) != IDOK)
+        return;
+    CommitFocus();
+    g_focus = 0;
+    ShowPanel(s, false);
+    std::wstring bin = panel::LayoutsDir() + L"\\deleted";
+    CreateDirectoryW(bin.c_str(), nullptr);
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    MoveFileExW(s.path.c_str(), (bin + F(L"\\panel-%d-%04u%02u%02u-%02u%02u%02u.txt", s.id, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond)).c_str(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED);
+    g_slots.erase(g_slots.begin() + g_edit);
+    g_edit = std::min(g_edit, int(g_slots.size()) - 1);
+    g_layout = EditSlot().layout;
+    g_sel = -1;
+    RememberEditSlot();
+}
+
+// Puts a layout fullscreen on a display (or back to "virtual"). Another layout that was on that display
+// moves back to a window, so two layouts never fight over one screen.
+void AssignDisplay(Slot& s, const std::wstring& dev) {
+    if (dev != L"virtual" && !dev.empty()) {
+        for (auto& o : g_slots) {
+            if (o.get() == &s || LayoutOf(*o).display != dev) continue;
+            bool wasOpen = o->wnd != nullptr;
+            ShowPanel(*o, false);
+            MutLayout(*o).display = L"virtual";
+            SaveSlot(*o);
+            if (wasOpen) ShowPanel(*o, true);
+        }
+    }
+    bool open = s.wnd != nullptr;
+    ShowPanel(s, false);
+    MutLayout(s).display = dev;
+    SaveSlot(s);
+    if (open) ShowPanel(s, true);
 }
 
 // ---------- editor controls ----------
@@ -626,7 +878,6 @@ void AddWidget(panel::WType t, const std::string& sensor = "") {
     SaveLayout();
 }
 
-void ShowPanel(bool on);
 void OpenTabletDialog();
 bool TabletLastSize(int& w, int& h);   // tablet_ui.inc
 
@@ -660,17 +911,13 @@ void ShowDetectMenu() {
     else if (cmd >= 100 && cmd < 100 + int(g_mons.size())) {
         const auto& mo = g_mons[size_t(cmd - 100)];
         DesignFor(mo.rc.right - mo.rc.left, mo.rc.bottom - mo.rc.top);
-        if (!mo.primary) {   // a separate display: also show the panel there
-            g_layout.display = mo.dev;
-            SaveLayout();
-            bool open = g_panelWnd != nullptr;
-            ShowPanel(false);
-            if (open) ShowPanel(true);
+        if (!mo.primary) {   // a separate display: also show this layout there
+            AssignDisplay(EditSlot(), mo.dev);
+            ShowPanel(EditSlot(), true);
         }
     }
     InvalidateRect(g_hwnd, nullptr, FALSE);
 }
-void RefreshAdapted();
 
 void ExportPanel() {
     wchar_t file[MAX_PATH] = L"my-panel.rigpanel";
@@ -699,44 +946,100 @@ void ImportPanel() {
     of.nMaxFile = MAX_PATH;
     of.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
     if (!GetOpenFileNameW(&of)) return;
-    if (!g_layout.widgets.empty() &&
-        MessageBoxW(g_hwnd, L"Replace your current panel with the imported one?\n(Export yours first if you want to keep it.)", L"RigSense",
-                    MB_OKCANCEL | MB_ICONQUESTION) != IDOK)
-        return;
     panel::Layout l;
     std::wstring err;
     if (!panel::Import(file, l, mon::ExeDir() + L"\\panel_images", err)) {
         MessageBoxW(g_hwnd, err.c_str(), L"RigSense", MB_ICONERROR);
         return;
     }
-    l.display = g_layout.display;     // keep this PC's display choice
-    l.autoShow = g_layout.autoShow;
     int missing = 0;
     for (auto& w : l.widgets)
         if (w.type != panel::WType::Clock && w.type != panel::WType::Text && w.type != panel::WType::Pins && !g_reg.Find(w.sensor)) ++missing;
-    g_layout = l;
-    g_sel = -1;
-    SaveLayout();
+    // An import never overwrites anything: it becomes a new layout, named after the file if it has no name.
+    std::wstring name = l.name;
+    if (name.empty()) {
+        std::wstring f = file;
+        size_t sl = f.find_last_of(L"\\/");
+        size_t from = sl == std::wstring::npos ? 0 : sl + 1, dot = f.find_last_of(L'.');
+        name = f.substr(from, dot != std::wstring::npos && dot > from ? dot - from : std::wstring::npos);
+    }
+    size_t before = g_slots.size();
+    AddSlot(&l, name.substr(0, 40));
+    if (g_slots.size() == before) return;
     if (missing)
-        MessageBoxW(g_hwnd, F(L"Imported. %d widget(s) use sensors this PC doesn't have (or whose source isn't running) - select them and pick a sensor from the list.", missing).c_str(),
+        MessageBoxW(g_hwnd, F(L"Imported as a new layout. %d widget(s) use sensors this PC doesn't have (or whose source isn't running) - select them and pick a sensor from the list.", missing).c_str(),
                     L"RigSense", MB_ICONINFORMATION);
+}
+
+// The layout strip above the preview: one chip per layout (where it's showing), New / Duplicate / Delete, and the name.
+float DrawLayoutStrip(float x, float y, float w) {
+    const float h = 30;
+    std::wstring tmp;
+    Anchor("layouts", R(x - 6, y - 4, w + 12, h + 8));
+    Text(L"Layouts", R(x, y, 70, h), Fmt(13, 1), kInk2);
+    float right = x + w;
+    // right side: name field + actions
+    float bx = right - 76;
+    Btn(R(bx, y, 76, h), L"Delete", false, [] { DeleteEditSlot(); });
+    bx -= 92;
+    Btn(R(bx, y, 86, h), L"Duplicate", false, [] {
+        panel::Layout c = g_layout;
+        AddSlot(&c, (SlotName(EditSlot()) + L" copy").substr(0, 40));
+    });
+    bx -= 76;
+    Btn(R(bx, y, 70, h), L"+ New", true, [] { AddSlot(nullptr, F(L"Layout %d", NextSlotId())); });
+    bx -= 206;
+    if (TextField(R(bx, y, 200, h), F_SLOTNAME, g_layout.name, L"Layout name", tmp)) {
+        while (!tmp.empty() && tmp.back() == L' ') tmp.pop_back();
+        if (!tmp.empty()) { g_layout.name = tmp.substr(0, 40); SaveLayout(); }
+    }
+    Text(L"Name", R(bx - 46, y, 42, h), Fmt(12.5f, 1, 2), kInk2);
+    // chips
+    float cx = x + 74, avail = bx - 56 - cx;
+    size_t n = g_slots.size();
+    float chipW = std::clamp((avail - 6 * float(n - 1)) / float(n), 70.f, 230.f);
+    for (size_t i = 0; i < n; ++i) {
+        const Slot& s = *g_slots[i];
+        D2D1_RECT_F r = R(cx + float(i) * (chipW + 6), y, chipW, h);
+        if (r.right > bx - 56) break;   // too many to show: the rest are reachable by deleting / via the list order
+        bool act = int(i) == g_edit;
+        bool hv = Hover(r);
+        Fill(r, act ? kSurface3 : hv ? kSurface2 : kBg, 7);
+        Stroke(r, act ? kAccent : kBorder, 7, 1.f, act ? 0.9f : 1.f);
+        std::wstring where = SlotWhere(s);
+        bool live = !where.empty();
+        Circle(r.left + 11, (r.top + r.bottom) / 2, 3.5f, live ? kGood : kMuted);
+        std::wstring label = SlotName(s);
+        float nameW = chipW - 24;
+        if (live) {
+            float ww = std::min(Measure(where, Fmt(11)) + 8, chipW * 0.45f);
+            Text(where, D2D1::RectF(r.right - ww - 6, r.top, r.right - 6, r.bottom), Fmt(11, 0, 2), kMuted);
+            nameW -= ww + 4;
+        }
+        Text(label, R(r.left + 20, r.top, nameW, h), Fmt(FitSize(label, 1, 12.5f, nameW), 1), act ? kAccent : kInk);
+        int idx = int(i);
+        g_hits.push_back({r, 0, [idx] { SelectSlot(idx); }});
+    }
+    return y + h;
 }
 
 void DrawPanelEditor(float W, float H) {
     if (g_sel >= int(g_layout.widgets.size())) g_sel = -1;
-    float pad = 16, top = 48 + pad;
+    float pad = 16;
+    float top = DrawLayoutStrip(pad, 48 + 10, W - 2 * pad) + 10;
     float lw = float(g_layout.width), lh = float(g_layout.height);
     float areaW = W - 2 * pad, maxH = (H - top - pad) * 0.40f;
     float pw = areaW, ph = pw * lh / lw;
     if (ph > maxH) { ph = maxH; pw = ph * lw / lh; }
     float px = pad + (areaW - pw) / 2, py = top;
     g_preview = R(px, py, pw, ph);
+    Anchor("preview", g_preview);
     g_previewScale = pw / lw;
     D2D1_MATRIX_3X2_F old;
     g_rt->GetTransform(&old);
     g_rt->SetTransform(D2D1::Matrix3x2F::Scale(g_previewScale, g_previewScale) * D2D1::Matrix3x2F::Translation(px, py));
     g_rt->PushAxisAlignedClip(D2D1::RectF(0, 0, lw, lh), D2D1_ANTIALIAS_MODE_ALIASED);
-    RenderPanel(lw, lh, true);
+    RenderPanel(g_layout, lw, lh, true);
     g_rt->PopAxisAlignedClip();
     g_rt->SetTransform(old);
     Stroke(D2D1::RectF(px - 1, py - 1, px + pw + 1, py + ph + 1), kBorder, 0);
@@ -753,6 +1056,7 @@ void DrawPanelEditor(float W, float H) {
     {
         D2D1_RECT_F P = R(pad, cy0, c1, colH);
         Panel(P);
+        Anchor("panelcol", P);
         float x = P.left + 14, y = P.top + 10, w = c1 - 28;
         Text(L"Panel", R(x, y, w, 26), Fmt(15, 1), kInk);
         y += 32;
@@ -844,19 +1148,12 @@ void DrawPanelEditor(float W, float H) {
             Btn(R(cx + w - 92 - 78, y, 78, ctl), L"Identify", false, [] { IdentifyDisplays(); });
             Btn(R(cx, y, w - 92 - 84, ctl), dl + L"  \u25B8", false, [opts, cur] {
                 size_t n = size_t(cur + 1) % opts.size();
-                if (opts[n] < 0) g_layout.display = L"virtual";
-                else {
-                    auto& m = g_mons[size_t(opts[n])];
-                    g_layout.display = m.dev;
-                }
-                bool open = g_panelWnd != nullptr;
-                ShowPanel(false);
-                SaveLayout();
-                if (open) ShowPanel(true);
+                AssignDisplay(EditSlot(), opts[n] < 0 ? std::wstring(L"virtual") : g_mons[size_t(opts[n])].dev);
             });
         }
         y += rowH;
-        Btn(R(x, y, (w - 8) / 2, ctl), g_panelWnd ? L"Close panel" : L"Open panel", g_panelWnd != nullptr, [] { ShowPanel(!g_panelWnd); });
+        bool open = EditSlot().wnd != nullptr;
+        Btn(R(x, y, (w - 8) / 2, ctl), open ? L"Close panel" : L"Open panel", open, [open] { ShowPanel(EditSlot(), !open); });
         Btn(R(x + (w - 8) / 2 + 8, y, (w - 8) / 2, ctl), g_layout.autoShow ? L"Open at start: on" : L"Open at start: off", g_layout.autoShow,
             [] { g_layout.autoShow = !g_layout.autoShow; SaveLayout(); });
         y += rowH;
@@ -864,7 +1161,7 @@ void DrawPanelEditor(float W, float H) {
             auto d = panel::DefaultLayout();
             int c, r;
             panel::AutoGrid(g_layout.width, g_layout.height, c, r);
-            d.width = g_layout.width; d.height = g_layout.height; d.display = g_layout.display; d.autoShow = g_layout.autoShow;
+            d.width = g_layout.width; d.height = g_layout.height; d.display = g_layout.display; d.autoShow = g_layout.autoShow; d.name = g_layout.name;
             panel::Regrid(d, c, r);
             g_layout = d;
             g_sel = -1;
@@ -880,6 +1177,7 @@ void DrawPanelEditor(float W, float H) {
     {
         D2D1_RECT_F P = R(pad * 2 + c1, cy0, c2, colH);
         Panel(P);
+        Anchor("widgetcol", P);
         float x = P.left + 14, y = P.top + 10, w = c2 - 28;
         Text(L"Widget", R(x, y, 90, 26), Fmt(15, 1), kInk);
         Text(L"Add:", R(x + 76, y, 40, 26), Fmt(12.5f, 1), kInk2);
@@ -999,6 +1297,7 @@ void DrawPanelEditor(float W, float H) {
     {
         D2D1_RECT_F P = R(pad * 3 + c1 + c2, cy0, c3, colH);
         Panel(P);
+        Anchor("sensorcol", P);
         float x = P.left + 14, y = P.top + 10, w = c3 - 28;
         const auto& all = g_reg.All();
         Text(F(L"Sensors (%zu)", all.size()), R(x, y, w, 26), Fmt(15, 1), kInk);
@@ -1098,7 +1397,7 @@ bool PreviewMouseDown(float mx, float my) {
     int cx = std::clamp(int(std::floor((lx - gap / 2) / cw)), 0, g_layout.cols - 1);
     int cy = std::clamp(int(std::floor((ly - gap / 2) / ch)), 0, g_layout.rows - 1);
     if (g_sel >= 0) {
-        D2D1_RECT_F r = WidgetRect(g_layout.widgets[size_t(g_sel)], lw, lh);
+        D2D1_RECT_F r = WidgetRect(g_layout, g_layout.widgets[size_t(g_sel)], lw, lh);
         float hs = 18.f / g_previewScale;
         if (lx >= r.right - hs && lx <= r.right + hs / 2 && ly >= r.bottom - hs && ly <= r.bottom + hs / 2) {
             g_drag = 2;
@@ -1108,7 +1407,7 @@ bool PreviewMouseDown(float mx, float my) {
     }
     g_sel = -1;
     for (int i = int(g_layout.widgets.size()) - 1; i >= 0; --i) {
-        if (In(WidgetRect(g_layout.widgets[size_t(i)], lw, lh), lx, ly)) {
+        if (In(WidgetRect(g_layout, g_layout.widgets[size_t(i)], lw, lh), lx, ly)) {
             g_sel = i;
             g_drag = 1;
             g_dragDX = cx - g_layout.widgets[size_t(i)].x;
@@ -1162,282 +1461,319 @@ void PreviewMouseMove(float mx, float my) {
     int cx = int(std::floor((lx - gap / 2) / cw)), cy = int(std::floor((ly - gap / 2) / ch));
     auto& w = g_layout.widgets[size_t(g_sel)];
     bool changed = g_drag == 1 ? TryPlace(cx - g_dragDX, cy - g_dragDY, w.w, w.h) : TryPlace(w.x, w.y, cx - w.x + 1, cy - w.y + 1);
-    if (changed && g_panelWnd) InvalidateRect(g_panelWnd, nullptr, FALSE);
+    if (changed && EditSlot().wnd) InvalidateRect(EditSlot().wnd, nullptr, FALSE);
 }
 
-// ---------- panel window ----------
-void ReleasePanelTarget() {
-    ReleaseBmp(g_bmpPanel);
-    SafeRelease(g_pbr);
-    SafeRelease(g_prt);
+// ---------- panel windows (one per open layout) ----------
+Slot* SlotOfWnd(HWND h) { return reinterpret_cast<Slot*>(GetWindowLongPtrW(h, GWLP_USERDATA)); }
+
+void ReleasePanelTarget(Slot& s) {
+    ReleaseBmp(s.bmp);
+    SafeRelease(s.pbr);
+    SafeRelease(s.prt);
 }
 
-void PaintPanelWindow() {
-    if (!g_prt) {
+void PaintPanelWindow(Slot& sl) {
+    if (!sl.prt) {
         RECT rc;
-        GetClientRect(g_panelWnd, &rc);
+        GetClientRect(sl.wnd, &rc);
         auto props = D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1::PixelFormat(), 96.f, 96.f);
-        if (FAILED(g_d2d->CreateHwndRenderTarget(props, D2D1::HwndRenderTargetProperties(g_panelWnd, D2D1::SizeU(rc.right, rc.bottom)), &g_prt))) return;
-        g_prt->CreateSolidColorBrush(Col(kInk), &g_pbr);
-        g_prt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+        if (FAILED(g_d2d->CreateHwndRenderTarget(props, D2D1::HwndRenderTargetProperties(sl.wnd, D2D1::SizeU(rc.right, rc.bottom)), &sl.prt))) return;
+        sl.prt->CreateSolidColorBrush(Col(kInk), &sl.pbr);
+        sl.prt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
     }
+    const panel::Layout& L = LayoutOf(sl);
     auto saveRt = g_rt;
     auto saveBr = g_br;
     float saveScale = g_previewScale;
-    g_rt = g_prt;
-    g_br = g_pbr;
-    g_curBmp = &g_bmpPanel;
+    g_rt = sl.prt;
+    g_br = sl.pbr;
+    g_curBmp = &sl.bmp;
     g_previewScale = 1.f;
-    g_prt->BeginDraw();
-    g_prt->SetTransform(D2D1::Matrix3x2F::Identity());
-    auto sz = g_prt->GetSize();
-    if (g_panelVirtual) {
-        // Virtual panel: draw a device bezel, then the panel at its real pixel size scaled by g_virtScale.
-        g_prt->Clear(Col(0x050608));
+    sl.prt->BeginDraw();
+    sl.prt->SetTransform(D2D1::Matrix3x2F::Identity());
+    auto sz = sl.prt->GetSize();
+    if (sl.virt) {
+        // Virtual panel: a device bezel, then the panel at its real pixel size scaled by virtScale.
+        sl.prt->Clear(Col(0x050608));
         float b = kBezel, bb = kBezelBottom;
         Stroke(D2D1::RectF(0, 0, sz.width, sz.height), 0x2A2F38, 14, 2.f);
         Stroke(D2D1::RectF(b - 3, b - 3, sz.width - b + 3, sz.height - bb + 3), 0x000000, 4, 3.f);
         float pw = sz.width - 2 * b, ph = sz.height - b - bb;
-        Text(F(L"RigSense · virtual %d×%d panel · %d%% · drag to move · wheel to resize · right-click for options",
-               g_layout.width, g_layout.height, int(std::lround(g_virtScale * 100))),
+        Text(F(L"%s · %d×%d · %d%% · drag to move · wheel to resize · right-click for options", SlotName(sl).c_str(),
+               L.width, L.height, int(std::lround(sl.virtScale * 100))),
              D2D1::RectF(b, sz.height - bb, sz.width - b, sz.height - 2), Fmt(10.5f, 0, 1), 0x6B7280);
-        g_prt->SetTransform(D2D1::Matrix3x2F::Scale(g_virtScale, g_virtScale) * D2D1::Matrix3x2F::Translation(b, b));
-        g_prt->PushAxisAlignedClip(D2D1::RectF(0, 0, pw / g_virtScale, ph / g_virtScale), D2D1_ANTIALIAS_MODE_ALIASED);
-        RenderPanel(float(g_layout.width), float(g_layout.height), false);
-        g_prt->PopAxisAlignedClip();
+        sl.prt->SetTransform(D2D1::Matrix3x2F::Scale(sl.virtScale, sl.virtScale) * D2D1::Matrix3x2F::Translation(b, b));
+        sl.prt->PushAxisAlignedClip(D2D1::RectF(0, 0, pw / sl.virtScale, ph / sl.virtScale), D2D1_ANTIALIAS_MODE_ALIASED);
+        RenderPanel(L, float(L.width), float(L.height), false);
+        DrawAlarmOverlay(float(L.width), float(L.height));
+        sl.prt->PopAxisAlignedClip();
     } else {
-        g_prt->Clear(Col(g_layout.bgColor));
-        D2D1_RECT_F lb;
-        if (!g_hasAdapted && LetterboxRect(sz.width, sz.height, lb)) {
-            RenderLetterboxed(sz.width, sz.height, lb);
-        } else {
-            if (g_hasAdapted) std::swap(g_layout, g_adapted);   // render-only, swapped straight back
-            RenderPanel(sz.width, sz.height, false);
-            if (g_hasAdapted) std::swap(g_layout, g_adapted);
-        }
+        RenderOnSurface(L, sz.width, sz.height);
+        DrawAlarmOverlay(sz.width, sz.height);
     }
-    HRESULT hr = g_prt->EndDraw();
+    HRESULT hr = sl.prt->EndDraw();
     g_rt = saveRt;
     g_br = saveBr;
     g_curBmp = &g_bmpMain;
     g_previewScale = saveScale;
-    if (hr == D2DERR_RECREATE_TARGET) ReleasePanelTarget();
+    if (hr == D2DERR_RECREATE_TARGET) ReleasePanelTarget(sl);
 }
 
+void SnapPanel(Slot& s, bool toDisplay);
+
 LRESULT CALLBACK PanelProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
+    if (m == WM_NCCREATE) {
+        auto cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+        SetWindowLongPtrW(h, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+        return DefWindowProcW(h, m, wp, lp);
+    }
+    Slot* sp = SlotOfWnd(h);
+    if (!sp) return DefWindowProcW(h, m, wp, lp);
+    Slot& s = *sp;
     switch (m) {
     case WM_PAINT: {
         PAINTSTRUCT ps;
         BeginPaint(h, &ps);
-        PaintPanelWindow();
+        PaintPanelWindow(s);
         EndPaint(h, &ps);
         return 0;
     }
     case WM_ERASEBKGND: return 1;
     case WM_SIZE:
-        if (g_prt) g_prt->Resize(D2D1::SizeU(LOWORD(lp), HIWORD(lp)));
-        if (h == g_panelWnd) RefreshAdapted();   // display resolution changed
+        if (s.prt) s.prt->Resize(D2D1::SizeU(LOWORD(lp), HIWORD(lp)));
         InvalidateRect(h, nullptr, FALSE);
         return 0;
     case WM_NCHITTEST:
-        if (g_panelVirtual) return HTCAPTION;   // drag anywhere to move the virtual panel
+        if (s.virt) return HTCAPTION;   // drag anywhere to move the virtual panel
         break;
     case WM_EXITSIZEMOVE:
         // Dropped the virtual panel on another (non-main) display: go fullscreen there.
-        if (g_panelVirtual && g_layout.snapOnDrop) {
+        if (s.virt && LayoutOf(s).snapOnDrop) {
             MONITORINFOEXW mi{};
             mi.cbSize = sizeof mi;
             if (GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi) && !(mi.dwFlags & MONITORINFOF_PRIMARY)) {
-                g_snapDev = mi.szDevice;
-                PostMessageW(g_hwnd, WM_APP_PANEL_SNAP, 0, 0);
+                s.snapDev = mi.szDevice;
+                PostMessageW(g_hwnd, WM_APP_PANEL_SNAP, 0, s.id);
             }
         }
         return 0;
     case WM_MOUSEWHEEL:
-        if (g_panelVirtual) {
-            float k = GET_WHEEL_DELTA_WPARAM(wp) > 0 ? 1.1f : 1 / 1.1f;
-            SetVirtualScale(g_virtScale * k);
-        }
+        if (s.virt) SetVirtualScale(s, s.virtScale * (GET_WHEEL_DELTA_WPARAM(wp) > 0 ? 1.1f : 1 / 1.1f));
         return 0;
     case WM_NCRBUTTONUP:
     case WM_RBUTTONUP: {
         HMENU m2 = CreatePopupMenu();
         EnumMonitors();
-        if (g_panelVirtual) {
-            AppendMenuW(m2, MF_STRING | (g_virtTop ? MF_CHECKED : 0), 1, L"Always on top\tT");
+        AppendMenuW(m2, MF_STRING | MF_GRAYED, 0, SlotName(s).c_str());
+        AppendMenuW(m2, MF_SEPARATOR, 0, nullptr);
+        if (s.virt) {
+            AppendMenuW(m2, MF_STRING | (s.virtTop ? MF_CHECKED : 0), 1, L"Always on top\tT");
             AppendMenuW(m2, MF_STRING, 2, L"Actual size (100%)\t1");
             AppendMenuW(m2, MF_STRING, 3, L"Fit to screen\tF");
-            AppendMenuW(m2, MF_STRING | (g_layout.snapOnDrop ? MF_CHECKED : 0), 5, L"Go fullscreen when dropped on another display");
+            AppendMenuW(m2, MF_STRING | (LayoutOf(s).snapOnDrop ? MF_CHECKED : 0), 5, L"Go fullscreen when dropped on another display");
             AppendMenuW(m2, MF_SEPARATOR, 0, nullptr);
         } else {
             AppendMenuW(m2, MF_STRING, 6, L"Back to window (virtual panel)");
         }
-        int curMon = MonitorIndex(g_layout.display);
+        int curMon = MonitorIndex(LayoutOf(s).display);
         for (size_t i = 0; i < g_mons.size(); ++i) {
-            if (g_mons[i].primary || (!g_panelVirtual && int(i) == curMon)) continue;
+            if (g_mons[i].primary || (!s.virt && int(i) == curMon)) continue;
             AppendMenuW(m2, MF_STRING, UINT(100 + i), (L"Fullscreen on " + MonitorLabel(int(i))).c_str());
         }
         AppendMenuW(m2, MF_STRING, 7, L"Identify displays");
+        AppendMenuW(m2, MF_STRING, 8, L"Edit this layout");
         AppendMenuW(m2, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(m2, MF_STRING, 4, L"Close panel\tEsc");
         POINT pt;
         GetCursorPos(&pt);
         int cmd = TrackPopupMenu(m2, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, h, nullptr);
         DestroyMenu(m2);
-        if (cmd == 1) ToggleVirtualTop();
-        else if (cmd == 2) SetVirtualScale(1.f);
-        else if (cmd == 3) SetVirtualScale(FitVirtualScale());
+        if (cmd == 1) ToggleVirtualTop(s);
+        else if (cmd == 2) SetVirtualScale(s, 1.f);
+        else if (cmd == 3) SetVirtualScale(s, FitVirtualScale(s));
         else if (cmd == 4) DestroyWindow(h);
-        else if (cmd == 5) { g_layout.snapOnDrop = !g_layout.snapOnDrop; SaveLayout(); }
-        else if (cmd == 6) PostMessageW(g_hwnd, WM_APP_PANEL_SNAP, 1, 0);
+        else if (cmd == 5) { MutLayout(s).snapOnDrop = !LayoutOf(s).snapOnDrop; SaveSlot(s); }
+        else if (cmd == 6) PostMessageW(g_hwnd, WM_APP_PANEL_SNAP, 1, s.id);
         else if (cmd == 7) IdentifyDisplays();
-        else if (cmd >= 100 && cmd < 100 + int(g_mons.size())) {
-            g_snapDev = g_mons[size_t(cmd - 100)].dev;
-            PostMessageW(g_hwnd, WM_APP_PANEL_SNAP, 0, 0);
+        else if (cmd == 8) {
+            SelectSlot(SlotIndex(&s));
+            g_tab = TAB_PANEL;
+            ShowWindow(g_hwnd, IsIconic(g_hwnd) ? SW_RESTORE : SW_SHOW);
+            SetForegroundWindow(g_hwnd);
+            InvalidateRect(g_hwnd, nullptr, FALSE);
+        } else if (cmd >= 100 && cmd < 100 + int(g_mons.size())) {
+            s.snapDev = g_mons[size_t(cmd - 100)].dev;
+            PostMessageW(g_hwnd, WM_APP_PANEL_SNAP, 0, s.id);
         }
         return 0;
     }
     case WM_NCLBUTTONDBLCLK:
     case WM_LBUTTONDBLCLK:
-        if (!g_panelVirtual) DestroyWindow(h);   // fullscreen panel: double-click closes
+        if (!s.virt) DestroyWindow(h);   // fullscreen panel: double-click closes
         return 0;
     case WM_CLOSE:
         DestroyWindow(h);
         return 0;
     case WM_KEYDOWN:
         if (wp == VK_ESCAPE) DestroyWindow(h);
-        else if (g_panelVirtual && wp == 'T') ToggleVirtualTop();
-        else if (g_panelVirtual && wp == '1') SetVirtualScale(1.f);
-        else if (g_panelVirtual && wp == 'F') SetVirtualScale(FitVirtualScale());
+        else if (s.virt && wp == 'T') ToggleVirtualTop(s);
+        else if (s.virt && wp == '1') SetVirtualScale(s, 1.f);
+        else if (s.virt && wp == 'F') SetVirtualScale(s, FitVirtualScale(s));
         return 0;
     case WM_DESTROY:
-        ReleasePanelTarget();
-        g_panelWnd = nullptr;
+        ReleasePanelTarget(s);
+        s.wnd = nullptr;
+        SetWindowLongPtrW(h, GWLP_USERDATA, 0);
         if (g_hwnd) InvalidateRect(g_hwnd, nullptr, FALSE);
         return 0;
     }
     return DefWindowProcW(h, m, wp, lp);
 }
 
-void ShowPanel(bool on) {
+void ShowPanel(Slot& s, bool on) {
     if (!on) {
-        if (g_panelWnd) DestroyWindow(g_panelWnd);
+        if (s.wnd) DestroyWindow(s.wnd);
         return;
     }
-    if (g_panelWnd) return;
+    if (s.wnd) return;
     EnumMonitors();
+    const panel::Layout& L = LayoutOf(s);
     const MonInfo* mon = nullptr;
-    for (auto& m : g_mons) if (m.dev == g_layout.display) mon = &m;
+    for (auto& m : g_mons) if (m.dev == L.display) mon = &m;
+    // A display already used by another open layout: this one opens as a window instead.
+    if (mon)
+        for (auto& o : g_slots)
+            if (o.get() != &s && o->wnd && !o->virt && LayoutOf(*o).display == mon->dev) mon = nullptr;
     HINSTANCE inst = GetModuleHandleW(nullptr);
+    std::wstring title = L"RigSense · " + SlotName(s);
     if (mon && !mon->primary) {
         // Real panel: borderless fullscreen on that display, no taskbar button, never steals focus.
-        g_panelWnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"RigSensePanelWnd", L"RigSense panel", WS_POPUP,
-                                     mon->rc.left, mon->rc.top, mon->rc.right - mon->rc.left, mon->rc.bottom - mon->rc.top,
-                                     nullptr, nullptr, inst, nullptr);
-        g_panelVirtual = false;
-        RefreshAdapted();
+        s.virt = false;
+        s.wnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"RigSensePanelWnd", title.c_str(), WS_POPUP, mon->rc.left, mon->rc.top,
+                                mon->rc.right - mon->rc.left, mon->rc.bottom - mon->rc.top, nullptr, nullptr, inst, &s);
     } else {
         // Virtual panel: a floating device-like window at the panel's real pixel size (scaled down if it doesn't fit).
-        g_panelVirtual = true;
-        g_virtScale = std::min(1.f, FitVirtualScale());
-        SIZE sz = VirtualWindowSize();
+        s.virt = true;
+        s.virtScale = std::min(1.f, FitVirtualScale(s));
+        SIZE sz = VirtualWindowSize(s);
         RECT wa;
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
-        g_panelWnd = CreateWindowExW(WS_EX_APPWINDOW | (g_virtTop ? WS_EX_TOPMOST : 0), L"RigSensePanelWnd", L"RigSense virtual panel",
-                                     WS_POPUP, wa.left + (wa.right - wa.left - sz.cx) / 2, wa.top + (wa.bottom - wa.top - sz.cy) / 2,
-                                     sz.cx, sz.cy, nullptr, nullptr, inst, nullptr);
-        DWORD corner = 2;   // DWMWCP_ROUND
-        DwmSetWindowAttribute(g_panelWnd, 33, &corner, sizeof corner);
+        int open = 0;   // cascade several virtual panels instead of stacking them exactly
+        for (auto& o : g_slots) open += o.get() != &s && o->wnd && o->virt;
+        int off = (open % 6) * 36;
+        s.wnd = CreateWindowExW(WS_EX_APPWINDOW | (s.virtTop ? WS_EX_TOPMOST : 0), L"RigSensePanelWnd", title.c_str(), WS_POPUP,
+                                wa.left + (wa.right - wa.left - sz.cx) / 2 + off, wa.top + (wa.bottom - wa.top - sz.cy) / 2 + off, sz.cx, sz.cy,
+                                nullptr, nullptr, inst, &s);
+        if (s.wnd) {
+            DWORD corner = 2;   // DWMWCP_ROUND
+            DwmSetWindowAttribute(s.wnd, 33, &corner, sizeof corner);
+        }
     }
-    if (g_panelWnd) ShowWindow(g_panelWnd, g_panelVirtual ? SW_SHOW : SW_SHOWNOACTIVATE);
+    if (s.wnd) ShowWindow(s.wnd, s.virt ? SW_SHOW : SW_SHOWNOACTIVATE);
 }
 
-// Same shape as the design (e.g. a 1920x480 bar for a 1920x480 design): rendered as designed, just scaled.
-// Clearly different shape: render a proportionally regridded copy so widgets keep their arrangement with
-// roughly square cells instead of being stretched. The design itself stays untouched.
-bool LetterboxRect(float W, float H, D2D1_RECT_F& r) {
-    double design = double(g_layout.width) / g_layout.height, aspect = double(W) / H;
+void CloseAllPanels() {
+    for (auto& s : g_slots) ShowPanel(*s, false);
+}
+
+// "Open at start" layouts, in list order (a display taken by an earlier layout makes the next one a window).
+void ShowPanelsAtStart() {
+    for (auto& s : g_slots)
+        if (LayoutOf(*s).autoShow) ShowPanel(*s, true);
+}
+
+bool LetterboxRect(const panel::Layout& L, float W, float H, D2D1_RECT_F& r) {
+    double design = double(L.width) / L.height, aspect = double(W) / H;
     if ((aspect > 1.0) == (design > 1.0) || std::fabs(aspect - design) / design <= 0.10) return false;
-    float s = std::min(W / g_layout.width, H / g_layout.height);
-    float rw = g_layout.width * s, rh = g_layout.height * s;
+    float s = std::min(W / L.width, H / L.height);
+    float rw = L.width * s, rh = L.height * s;
     r = D2D1::RectF((W - rw) / 2, (H - rh) / 2, (W + rw) / 2, (H + rh) / 2);
     return true;
 }
 
-void RenderLetterboxed(float W, float H, const D2D1_RECT_F& r) {
-    Fill(D2D1::RectF(0, 0, W, H), g_layout.bgColor);
-    D2D1_MATRIX_3X2_F old;
-    g_rt->GetTransform(&old);
-    g_rt->SetTransform(D2D1::Matrix3x2F::Translation(r.left, r.top) * old);
-    g_rt->PushAxisAlignedClip(D2D1::RectF(0, 0, r.right - r.left, r.bottom - r.top), D2D1_ANTIALIAS_MODE_ALIASED);
-    RenderPanel(r.right - r.left, r.bottom - r.top, false);
-    g_rt->PopAxisAlignedClip();
-    g_rt->SetTransform(old);
-}
-
-void RefreshAdapted() {
-    g_hasAdapted = false;
-    if (!g_panelWnd || g_panelVirtual) return;
-    RECT rc;
-    GetClientRect(g_panelWnd, &rc);
-    int w = rc.right - rc.left, h = rc.bottom - rc.top;
-    if (w <= 0 || h <= 0) return;
+// Same shape: as designed. Clearly different shape, same orientation: a proportionally regridded copy so
+// widgets keep their arrangement with roughly square cells instead of being stretched.
+bool AdaptedLayout(const panel::Layout& L, int w, int h, panel::Layout& out) {
+    if (w <= 0 || h <= 0) return false;
     D2D1_RECT_F lb;
-    if (LetterboxRect(float(w), float(h), lb)) return;   // rotated display: letterboxed at paint time
-    double designAspect = double(g_layout.width) / g_layout.height, aspect = double(w) / h;
-    if (std::fabs(aspect - designAspect) / designAspect <= 0.10) return;
-    g_adapted = g_layout;
-    g_adapted.width = w;
-    g_adapted.height = h;
+    if (LetterboxRect(L, float(w), float(h), lb)) return false;   // rotated: letterboxed instead
+    double designAspect = double(L.width) / L.height, aspect = double(w) / h;
+    if (std::fabs(aspect - designAspect) / designAspect <= 0.10) return false;
+    out = L;
+    out.width = w;
+    out.height = h;
     int c, r;
     panel::AutoGrid(w, h, c, r);
-    panel::Regrid(g_adapted, c, r);
-    g_hasAdapted = true;
+    panel::Regrid(out, c, r);
+    return true;
+}
+
+void RenderOnSurface(const panel::Layout& L, float W, float H) {
+    g_rt->Clear(Col(L.bgColor));
+    D2D1_RECT_F lb;
+    panel::Layout adapted;
+    if (AdaptedLayout(L, int(W), int(H), adapted)) {
+        RenderPanel(adapted, W, H, false);
+    } else if (LetterboxRect(L, W, H, lb)) {
+        D2D1_MATRIX_3X2_F old;
+        g_rt->GetTransform(&old);
+        g_rt->SetTransform(D2D1::Matrix3x2F::Translation(lb.left, lb.top) * old);
+        g_rt->PushAxisAlignedClip(D2D1::RectF(0, 0, lb.right - lb.left, lb.bottom - lb.top), D2D1_ANTIALIAS_MODE_ALIASED);
+        RenderPanel(L, lb.right - lb.left, lb.bottom - lb.top, false);
+        g_rt->PopAxisAlignedClip();
+        g_rt->SetTransform(old);
+    } else {
+        RenderPanel(L, W, H, false);
+    }
 }
 
 // Fullscreen on a display or back to the floating window (the design itself is not changed).
-void SnapPanel(bool toDisplay) {
+void SnapPanel(Slot& s, bool toDisplay) {
     EnumMonitors();
     if (toDisplay) {
-        int i = MonitorIndex(g_snapDev);
+        int i = MonitorIndex(s.snapDev);
         if (i < 0 || g_mons[size_t(i)].primary) return;
-        const auto& m = g_mons[size_t(i)];
-        g_layout.display = m.dev;
+        AssignDisplay(s, g_mons[size_t(i)].dev);
     } else {
-        g_layout.display = L"virtual";
+        AssignDisplay(s, L"virtual");
     }
-    ShowPanel(false);
-    SaveLayout();
-    ShowPanel(true);
+    ShowPanel(s, true);
     if (g_hwnd) InvalidateRect(g_hwnd, nullptr, FALSE);
 }
 
-// Displays plugged in / out: follow the saved panel display automatically.
+// Displays plugged in / out: every layout follows its saved display automatically.
 void OnDisplaysChanged() {
     EnumMonitors();
-    int i = MonitorIndex(g_layout.display);
-    bool savedPresent = i >= 0 && !g_mons[size_t(i)].primary;
-    if (g_panelWnd) {
-        if (g_panelVirtual && savedPresent) { ShowPanel(false); ShowPanel(true); }        // display came back: fullscreen again
-        else if (!g_panelVirtual && !savedPresent) { ShowPanel(false); ShowPanel(true); } // display gone: fall back to the window
-        else if (!g_panelVirtual && savedPresent) {                                        // resolution / position changed
-            const RECT& r = g_mons[size_t(i)].rc;
-            SetWindowPos(g_panelWnd, nullptr, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
+    for (auto& sp : g_slots) {
+        Slot& s = *sp;
+        const panel::Layout& L = LayoutOf(s);
+        int i = MonitorIndex(L.display);
+        bool savedPresent = i >= 0 && !g_mons[size_t(i)].primary;
+        if (s.wnd) {
+            if (s.virt && savedPresent) { ShowPanel(s, false); ShowPanel(s, true); }        // display came back: fullscreen again
+            else if (!s.virt && !savedPresent) { ShowPanel(s, false); ShowPanel(s, true); } // display gone: fall back to the window
+            else if (!s.virt && savedPresent) {                                             // resolution / position changed
+                const RECT& r = g_mons[size_t(i)].rc;
+                SetWindowPos(s.wnd, nullptr, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+        } else if (L.autoShow && savedPresent) {
+            ShowPanel(s, true);
         }
-    } else if (g_layout.autoShow && savedPresent) {
-        ShowPanel(true);
     }
 }
 
 void OnSampleForPanel() {
     g_reg.Update(g_snap);
     double now = NowSec();
-    for (auto& w : g_layout.widgets) {
-        if (w.type != panel::WType::Graph) continue;
-        auto& dq = g_ghist[w.sensor];
-        const sensors::Sensor* s = g_reg.Find(w.sensor);
-        if (s && s->ok && (dq.empty() || dq.back().first < now - 0.05)) dq.push_back({now, float(s->value)});
+    for (auto& sp : g_slots) {
+        for (auto& w : LayoutOf(*sp).widgets) {
+            if (w.type != panel::WType::Graph) continue;
+            auto& dq = g_ghist[w.sensor];
+            const sensors::Sensor* s = g_reg.Find(w.sensor);
+            if (s && s->ok && (dq.empty() || dq.back().first < now - 0.05)) dq.push_back({now, float(s->value)});
+        }
     }
     for (auto& [k, dq] : g_ghist) while (!dq.empty() && dq.front().first < now - 610) dq.pop_front();
-    if (g_panelWnd) InvalidateRect(g_panelWnd, nullptr, FALSE);
+    for (auto& sp : g_slots) if (sp->wnd) InvalidateRect(sp->wnd, nullptr, FALSE);
 }

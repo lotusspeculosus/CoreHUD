@@ -68,6 +68,13 @@ int main() {
         bool all = b.widgets.size() == a.widgets.size();
         for (size_t i = 0; all && i < a.widgets.size(); ++i) all = SameWidget(a.widgets[i], b.widgets[i]);
         CHECK(all);
+        CHECK(b.name.empty());                                   // no name line: stays empty (pre-1.4 files)
+        // layout names (1.4): spaces, symbols, unicode, stray line breaks
+        a.name = L"Case bar · 21:9 = mine 100%\r\nsecond";
+        CHECK(panel::Save(p, a));
+        CHECK(panel::Load(p, b));
+        CHECK(b.name == L"Case bar · 21:9 = mine 100%  second");
+        CHECK(b.widgets.size() == a.widgets.size());
     }
 
     // 2. export / import with an embedded background image

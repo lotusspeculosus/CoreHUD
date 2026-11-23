@@ -2,7 +2,8 @@
 //  - Wi-Fi: http://<pc-ip>:<port>/?k=<key>   (QR code in the app; the secret key keeps other devices out)
 //  - USB:   `adb reverse` maps the tablet's localhost:<port> to the PC, so no network is involved at all.
 // The PC renders the panel at the tablet's exact resolution and the page swaps in a JPEG twice per second.
-// Read-only: the server only answers GET for the page, the frame image, a manifest and an icon.
+// Read-only: the server only answers GET for the page, the frame image, a manifest, an icon, the keep-awake
+// video and the alarm state (so the tablet can beep during a connector alarm).
 #pragma once
 #include <atomic>
 #include <cstdint>
@@ -27,6 +28,7 @@ public:
     void SetFrame(std::vector<unsigned char>&& jpeg, int w, int h);
     void SetIcon(std::vector<unsigned char>&& png);
     void SetKeepAwakeVideo(std::vector<unsigned char>&& mp4);   // tiny looping clip that keeps the tablet screen on
+    void SetAlarm(int level) { alarm_ = level; }                 // 0 none, 1 test, 2 connector alarm: the page beeps
     int Viewers();             // distinct clients seen in the last 5 s
     bool LastSize(int& w, int& h);   // resolution the most recent tablet/phone asked for (physical pixels)
 
@@ -36,6 +38,7 @@ private:
 
     std::thread thread_;
     std::atomic<bool> running_{false}, stop_{false};
+    std::atomic<int> alarm_{0};
     uintptr_t listen_ = ~uintptr_t(0);
     int port_ = 0;
     std::string key_;

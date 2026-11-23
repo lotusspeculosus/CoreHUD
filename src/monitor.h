@@ -7,6 +7,7 @@
 #include "nvapi_gpu.h"
 #include "nvml_gpu.h"
 #include "pinsources.h"
+#include "wear.h"
 
 namespace mon {
 
@@ -25,6 +26,8 @@ struct Config {
     bool csv = false;          // start with CSV logging on
     int criticalAction = 0;    // 0 = notify only, 1 = start a 60 s Windows shutdown countdown
     int criticalSeconds = 5;   // how long a pin must stay over the limit before the action
+    bool blackBox = true;      // save the minute before + after every connector alert (logs\blackbox)
+    bool wearCheck = true;     // learn the pin balance per day and warn when one pin's share creeps up
 };
 
 Config LoadConfig(const std::wstring& iniPath);   // writes a default INI if missing
@@ -76,6 +79,10 @@ struct Snapshot {
     double readMs = 0;
     bool csvOn = false;
     std::wstring csvPath;
+    bool blackBoxRecording = false;
+    std::wstring lastBlackBox;           // most recent recording (path)
+    bool wearOn = false;                 // wear check running (needs a 6-pin source)
+    wear::Status wear;
     Config cfg;
 };
 
@@ -85,6 +92,8 @@ void Restart(const Config& cfg);
 void ResetPeaks();
 void LogEvent(int level, const std::wstring& text);   // add an entry to the event log (0 info, 1 warn, 2 critical)
 void SetCsv(bool on);
+void ResetWear();                                     // new cable / reseated connector: start learning the balance again
+std::wstring BlackBoxDir();                           // logs\blackbox next to the exe
 
 void Get(Snapshot& out);
 void GetHistory(std::vector<HistPoint>& out);

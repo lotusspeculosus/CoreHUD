@@ -11,6 +11,7 @@
 #include <deque>
 #include <mutex>
 #include <thread>
+#include "blackbox.h"
 
 namespace mon {
 namespace {
@@ -25,6 +26,7 @@ std::thread g_thread;
 std::atomic<bool> g_stop{false};
 std::atomic<bool> g_resetPeaks{false};
 std::atomic<int> g_csvRequest{-1};     // -1 none, 0 off, 1 on
+std::atomic<bool> g_wearReset{false};
 HWND g_notify = nullptr;
 UINT g_msg = 0;
 
@@ -157,8 +159,33 @@ void ThreadMain(Config cfg) {
     std::chrono::steady_clock::time_point critSince{};
     bool critActive = false, shutdownIssued = false;
 
+    // black box + wear check
+    bbox::Recorder rec;
+    if (cfg.blackBox) {
+        CreateDirectoryW((ExeDir() + L"\\logs").c_str(), nullptr);
+        rec.Configure(BlackBoxDir());
+    }
+    wear::Tracker wt;
+    std::string wearSource;                       // pin source the tracker was opened for
+    auto lastWearFlush = clock::now();
+    double lastT = -1;
+
+    // Every event of this sample also goes into the black box; alarming ones start a recording.
+    std::wstring tickEv;
+    bool trig = false;
+    std::string reason;
+    auto ev = [&](int level, const std::wstring& t, bool alarm, const std::string& why) {
+        AddEvent(level, t);
+        if (!tickEv.empty()) tickEv += L" | ";
+        tickEv += t;
+        if (alarm && !trig) { trig = true; reason = why; }
+    };
+
     while (!g_stop) {
         auto tStart = clock::now();
+        tickEv.clear();
+        trig = false;
+        reason.clear();
 
         if (g_resetPeaks.exchange(false)) {
             for (double& p : s.peakA) p = 0;
@@ -209,8 +236,8 @@ void ThreadMain(Config cfg) {
                     if (r.activeFaults) {
                         wchar_t m[160];
                         swprintf(m, 160, L"%s reports an active fault (code 0x%04X) - check the connector", ext.Name().c_str(), r.activeFaults);
-                        AddEvent(2, m);
-                    } else AddEvent(0, L"Per-pin meter fault cleared");
+                        ev(2, m, true, "meter-fault");
+                    } else ev(0, L"Per-pin meter fault cleared", false, "");
                     lastFaults = r.activeFaults;
                 }
             }
@@ -222,8 +249,8 @@ void ThreadMain(Config cfg) {
             if (ok) s.pinError.clear();
             else { s.pinError = perr; ++s.failures; }
             if (ok != lastPinsOk || firstRead) {
-                if (!ok) AddEvent(2, L"Per-pin sensor read failed: " + Widen(perr));
-                else if (!firstRead) AddEvent(0, L"Per-pin sensor readings recovered");
+                if (!ok) ev(2, L"Per-pin sensor read failed: " + Widen(perr), !firstRead, "sensor-lost");
+                else if (!firstRead) ev(0, L"Per-pin sensor readings recovered", false, "");
                 else AddEvent(0, L"Per-pin monitoring active: " + s.pinSource);
                 lastPinsOk = ok;
             }
@@ -271,7 +298,7 @@ void ThreadMain(Config cfg) {
                     else if (a == 1 && st == 0) swprintf(m, 160, L"%s at %.2f A - above the %.1f A warning level", pinName, amp, cfg.warnA);
                     else if (a == 1) swprintf(m, 160, L"%s back below the limit (%.2f A)", pinName, amp);
                     else swprintf(m, 160, L"%s back to normal (%.2f A)", pinName, amp);
-                    AddEvent(a == 2 ? 2 : (a > st ? 1 : 0), m);
+                    ev(a == 2 ? 2 : (a > st ? 1 : 0), m, a > st, "pin" + std::to_string(i + 1) + (a == 2 ? "-limit" : "-warning"));
                     if (a == 2 && cfg.beep) MessageBeep(MB_ICONHAND);
                     s.pinState[i] = a;
                 }
@@ -291,10 +318,10 @@ void ThreadMain(Config cfg) {
                 if (CreateProcessW(nullptr, cmd, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
                     CloseHandle(pi.hThread);
                     CloseHandle(pi.hProcess);
-                    AddEvent(2, L"EMERGENCY: pin over limit for " + std::to_wstring(cfg.criticalSeconds) +
-                                    L" s - Windows shutdown started (60 s). Cancel with: shutdown /a");
+                    ev(2, L"EMERGENCY: pin over limit for " + std::to_wstring(cfg.criticalSeconds) +
+                              L" s - Windows shutdown started (60 s). Cancel with: shutdown /a", true, "emergency");
                 } else {
-                    AddEvent(2, L"EMERGENCY: could not start the shutdown command");
+                    ev(2, L"EMERGENCY: could not start the shutdown command", true, "emergency");
                 }
             }
             s.peakConnW = std::max(s.peakConnW, connW);
@@ -304,15 +331,80 @@ void ThreadMain(Config cfg) {
                 wchar_t m[160];
                 if (sp) swprintf(m, 160, L"Pin imbalance: spread %.2f A (warning at %.1f A)", spread, cfg.spreadWarnA);
                 else swprintf(m, 160, L"Pin imbalance cleared (spread %.2f A)", spread);
-                AddEvent(sp ? 1 : 0, m);
+                ev(sp ? 1 : 0, m, sp != 0, "imbalance");
                 spreadState = sp;
             }
         }
         ++s.samples;
         if (csv.f) csv.Write(s, connW, totalA);
+        const double tNow = std::chrono::duration<double>(clock::now() - t0).count();
+
+        // --- black box: last minute in memory, saved with the minute after when something alarming happens ---
+        if (cfg.blackBox) {
+            bbox::Sample bs;
+            bs.t = tNow;
+            SYSTEMTIME st;
+            GetLocalTime(&st);
+            char stamp[40];
+            snprintf(stamp, sizeof stamp, "%04u-%02u-%02u %02u:%02u:%02u.%03u", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
+                     st.wSecond, st.wMilliseconds);
+            bs.stamp = stamp;
+            bs.ok = s.pinsOk;
+            bs.pinCount = std::min(s.pinCount, bbox::kMaxPins);
+            for (int i = 0; i < bs.pinCount; ++i) { bs.volts[i] = float(s.volts[i]); bs.amps[i] = float(s.amps[i]); }
+            bs.connW = float(connW);
+            bs.boardW = float(s.stats.powerW);
+            bs.gpuUtil = s.stats.gpuUtil;
+            bs.coreC = float(s.stats.tempC);
+            bs.hotspotC = float(s.hotspotC);
+            bs.vramC = float(s.vramC);
+            for (int i = 0; i < s.pinCount; ++i) bs.maxState = std::max(bs.maxState, s.pinState[i]);
+            bs.events = tickEv;
+            bool wasRecording = rec.Recording();
+            rec.Add(bs, trig, reason);
+            if (!wasRecording && rec.Recording()) AddEvent(0, L"Black box: recording the minute before and after this alert");
+            std::wstring done = rec.TakeFinished();
+            if (!done.empty()) {
+                s.lastBlackBox = done;
+                AddEvent(0, L"Black box recording saved: " + done);
+            }
+            s.blackBoxRecording = rec.Recording();
+        }
+
+        // --- wear check: per-day pin balance under load (one 6-pin connector) ---
+        if (g_wearReset.exchange(false)) {
+            wt.Reset();
+            AddEvent(0, L"Connector wear check reset - learning the pin balance again");
+        }
+        if (cfg.wearCheck && s.pinsOk && s.pinCount >= 6 && !s.pinSourceId.empty()) {
+            if (wearSource != s.pinSourceId) {
+                if (!wearSource.empty()) wt.Flush();
+                wearSource = s.pinSourceId;
+                wt.Open(ExeDir() + L"\\logs\\wear-" + Widen(wearSource) + L".csv");
+                if (wt.status().state >= wear::WATCH) AddEvent(1, wt.status().text);
+            }
+            SYSTEMTIME st;
+            GetLocalTime(&st);
+            char date[16];
+            snprintf(date, sizeof date, "%04u-%02u-%02u", st.wYear, st.wMonth, st.wDay);
+            if (lastT >= 0) wt.Add(s.amps, date, tNow - lastT);
+            if (clock::now() - lastWearFlush >= std::chrono::minutes(5)) {
+                lastWearFlush = clock::now();
+                CreateDirectoryW((ExeDir() + L"\\logs").c_str(), nullptr);
+                wear::State old = wt.status().state;
+                if (wt.Flush()) {
+                    const auto& ws = wt.status();
+                    if (ws.state >= wear::WATCH && ws.state > old) AddEvent(ws.state == wear::WARN ? 1 : 0, ws.text);
+                    else if (old == wear::LEARNING && ws.state == wear::OK) AddEvent(0, L"Connector wear check: baseline learned, pin balance looks normal");
+                }
+            }
+        }
+        lastT = tNow;
+        s.wearOn = cfg.wearCheck && !wearSource.empty();
+        s.wear = wt.status();
 
         HistPoint hp;
-        hp.t = std::chrono::duration<double>(clock::now() - t0).count();
+        hp.t = tNow;
         hp.ok = s.pinsOk;
         for (int i = 0; i < 6; ++i) { hp.amps[i] = float(s.amps[i]); hp.volts[i] = float(s.volts[i]); }
         hp.connW = float(connW);
@@ -330,6 +422,8 @@ void ThreadMain(Config cfg) {
         g_cv.wait_until(lk, tStart + std::chrono::milliseconds(std::max(100, cfg.pollMs)), [] { return g_stop.load(); });
     }
     csv.Close();
+    rec.Close();
+    wt.Flush();
     nvml::Shutdown();
     nvapi::Shutdown();
 }
@@ -344,6 +438,7 @@ std::wstring ExeDir() {
 }
 
 std::wstring DefaultIniPath() { return ExeDir() + L"\\RigSense.ini"; }
+std::wstring BlackBoxDir() { return ExeDir() + L"\\logs\\blackbox"; }
 
 Config LoadConfig(const std::wstring& ini) {
     if (GetFileAttributesW(ini.c_str()) == INVALID_FILE_ATTRIBUTES) {
@@ -368,6 +463,10 @@ Config LoadConfig(const std::wstring& ini) {
                   ";   shutdown = also start a 60 s Windows shutdown countdown (cancel with: shutdown /a)\n"
                   "CriticalAction=notify\n"
                   "CriticalSeconds=5\n"
+                  "; save the minute before + after every connector alert to logs\\blackbox (1/0)\n"
+                  "BlackBox=1\n"
+                  "; learn the per-pin balance under load and warn when one pin's share creeps up (1/0)\n"
+                  "WearCheck=1\n"
                   "\n[Sensor]\n"
                   "; -1 = auto-pick the first known ROG Astral card\n"
                   "GpuIndex=-1\n"
@@ -404,6 +503,8 @@ Config LoadConfig(const std::wstring& ini) {
         c.criticalAction = _wcsicmp(b, L"shutdown") == 0 ? 1 : 0;
     }
     c.criticalSeconds = std::clamp(int(num(L"Monitor", L"CriticalSeconds", 5)), 1, 120);
+    c.blackBox = num(L"Monitor", L"BlackBox", 1) != 0;
+    c.wearCheck = num(L"Monitor", L"WearCheck", 1) != 0;
     c.gpuIndex = int(num(L"Sensor", L"GpuIndex", -1));
     c.i2cPort = std::clamp(int(num(L"Sensor", L"I2CPort", c.i2cPort)), 0, 15);
     c.i2cAddr = std::clamp(int(num(L"Sensor", L"I2CAddr", c.i2cAddr)), 0x03, 0x77);
@@ -454,6 +555,7 @@ void Restart(const Config& cfg) {
 void ResetPeaks() { g_resetPeaks = true; }
 void LogEvent(int level, const std::wstring& text) { AddEvent(level, text); }
 void SetCsv(bool on) { g_csvRequest = on ? 1 : 0; }
+void ResetWear() { g_wearReset = true; }
 
 void Get(Snapshot& out) {
     std::lock_guard<std::mutex> lk(g_mx);

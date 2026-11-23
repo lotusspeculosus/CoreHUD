@@ -18,6 +18,7 @@
 #include <deque>
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -73,10 +74,13 @@ bool g_tracking = false;
 
 enum HitId {
     HIT_TAB = 100, HIT_MODE = 200, HIT_RANGE = 300,
-    HIT_RESTART = 400, HIT_PEAKS, HIT_CSV, HIT_INI, HIT_LOGS, HIT_COMPONENTS
+    HIT_RESTART = 400, HIT_PEAKS, HIT_CSV, HIT_INI, HIT_LOGS, HIT_COMPONENTS, HIT_TOUR
 };
 struct Hit { D2D1_RECT_F r; int id; std::function<void()> fn; };
 std::vector<Hit> g_hits;
+// Named screen areas, recorded while painting, so the guided tour can point at them.
+std::map<std::string, D2D1_RECT_F> g_anchors;
+void Anchor(const char* name, const D2D1_RECT_F& r) { g_anchors[name] = r; }
 
 std::wstring g_ini;
 mon::Snapshot g_snap;
@@ -191,6 +195,7 @@ void DrawTopBar(float W) {
         Text(tabs[i], r, f, act ? kAccent : kInk2);
         if (act) Fill(R(x + 12, 44, w - 24, 2), kAccent, 1);
         g_hits.push_back({r, HIT_TAB + i});
+        Anchor(i == 0 ? "tab0" : i == 1 ? "tab1" : i == 2 ? "tab2" : "tab3", r);
         x += w + 4;
     }
 
@@ -218,12 +223,15 @@ void DrawTopBar(float W) {
 
     struct B { const wchar_t* label; int id; bool active; };
     std::wstring csvLabel = s.csvOn ? L"CSV log: on" : L"CSV log: off";
-    B btns[] = {{L"Components", HIT_COMPONENTS, false}, {L"Settings", HIT_INI, false}, {csvLabel.c_str(), HIT_CSV, s.csvOn}, {L"Reset peaks", HIT_PEAKS, false}, {L"Restart sensor", HIT_RESTART, false}};
+    B btns[] = {{L"Tour", HIT_TOUR, false}, {L"Components", HIT_COMPONENTS, false}, {L"Settings", HIT_INI, false}, {csvLabel.c_str(), HIT_CSV, s.csvOn},
+                {L"Reset peaks", HIT_PEAKS, false}, {L"Restart sensor", HIT_RESTART, false}};
     for (auto& b : btns) {
         float w = Measure(b.label, Fmt(13, 1, 1)) + 28;
         rx -= w;
         if (rx < x + 20) break;
         Button(R(rx, 10, w, 28), b.label, b.id, b.active);
+        if (b.id == HIT_INI) Anchor("settings", R(rx, 10, w, 28));
+        if (b.id == HIT_TOUR) Anchor("tour", R(rx, 10, w, 28));
         rx -= 8;
     }
 }
@@ -251,6 +259,7 @@ void DrawPinPanel(const D2D1_RECT_F& P) {
     const auto& s = g_snap;
     const auto& c = s.cfg;
     Panel(P);
+    Anchor("pins", P);
     float x0 = P.left + 18, x1 = P.right - 18;
     float y = P.top + 14;
     Fill(R(x0, y + 4, 26, 26), kAccent, 6, 0.9f);
@@ -292,6 +301,21 @@ void DrawPinPanel(const D2D1_RECT_F& P) {
     // footer line
     float footerH = 22;
     float chartBottom = P.bottom - 14 - footerH;
+    if (s.wearOn || s.blackBoxRecording) {   // connector wear check + black box status
+        chartBottom -= 20;
+        float ly = chartBottom + 2, recW = 0;
+        if (s.blackBoxRecording) {
+            std::wstring rec = L"Black box recording";
+            recW = Measure(rec, Fmt(11.5f, 1)) + 18;
+            Circle(x1 - recW + 5, ly + 9, 4, kCrit);
+            Text(rec, R(x1 - recW + 14, ly, recW, 18), Fmt(11.5f, 1), kCrit);
+        }
+        if (s.wearOn) {
+            uint32_t wc = s.wear.state == wear::WARN ? kWarn : s.wear.state == wear::WATCH ? kSerious : s.wear.state == wear::OK ? kGood : kMuted;
+            Circle(x0 + 5, ly + 9, 3.5f, wc);
+            Text(s.wear.text, R(x0 + 14, ly, x1 - x0 - 14 - recW - 10, 18), Fmt(11.5f), s.wear.state >= wear::WATCH ? kInk : kInk2);
+        }
+    }
     std::wstring footer = s.pinSourceId == "astral"
         ? F(L"IT8915FN @ 0x%02X \u00b7 I2C port %d \u00b7 read %.0f ms \u00b7 %llu samples \u00b7 %llu errors \u00b7 limit %.1f A, warn %.1f A",
             c.i2cAddr, c.i2cPort, s.readMs, (unsigned long long)s.samples, (unsigned long long)s.failures, c.limitA, c.warnA)
@@ -441,6 +465,7 @@ void Columns(const D2D1_RECT_F& c, const std::vector<std::pair<std::wstring, std
 }
 
 void DrawGpuPanel(const D2D1_RECT_F& P) {
+    Anchor("gpu", P);
     // Values come from the sensor registry, so this works for NVIDIA (NVML/NVAPI) and AMD/Intel (Windows counters).
     auto S = [](const char* key) -> const sensors::Sensor* {
         const sensors::Sensor* s = g_reg.Find(key);
@@ -559,6 +584,7 @@ void DrawDashboard(float W, float H) {
             ok ? F(L"Average %.2f A per pin", totA / 6) : L"", L"");
     DrawKpi(R(pad + 2 * (kw + 12), y, kw, kh), L"VOLTAGE", ok ? F(L"%.2f", avgV) : na, L"V",
             ok ? F(L"Lowest pin %.3f V  ·  session low %.3f V", minV, s.minVolts) : L"", L"");
+    Anchor("kpis", R(pad, y, W - 2 * pad, kh));
     y += kh + pad;
 
     float leftW = std::floor((W - 3 * pad) * 0.6f);
@@ -694,6 +720,7 @@ void DrawChart(float W, float H) {
     Text(L"Range", R(pad, y, 60, 30), Fmt(13, 1), kInk2);
     const wchar_t* ranges[] = {L"1 min", L"5 min", L"30 min"};
     for (int i = 0; i < 3; ++i) Button(R(pad + 60 + i * 78, y, 70, 30), ranges[i], HIT_RANGE + i, g_range == i);
+    Anchor("chart", D2D1::RectF(pad, y, W - pad, H - pad));
     y += 42;
     float h1 = std::floor((H - y - pad - 12) * 0.6f);
     std::vector<SeriesDef> pins;
@@ -710,6 +737,7 @@ void DrawEvents(float W, float H) {
     float pad = 16, y = 48 + pad;
     D2D1_RECT_F P = D2D1::RectF(pad, y, W - pad, H - pad);
     Panel(P);
+    Anchor("events", P);
     Text(L"Event log", R(P.left + 18, P.top + 12, 300, 26), Fmt(15, 1), kInk);
     Button(R(P.right - 150, P.top + 10, 132, 28), L"Open logs folder", HIT_LOGS);
     float rowH = 30, ly = P.top + 50;
@@ -770,6 +798,7 @@ void CheckAlerts() {
 
 #include "settings_ui.inc"
 #include "tablet_ui.inc"
+#include "tour_ui.inc"
 
 // ---------- render plumbing ----------
 void CreateTarget() {
@@ -793,6 +822,7 @@ void Paint() {
     g_rt->Clear(Col(kBg));
     auto sz = g_rt->GetSize();
     g_hits.clear();
+    g_anchors.clear();
     if (g_tab == TAB_DASH) DrawDashboard(sz.width, sz.height);
     else if (g_tab == TAB_CHART) DrawChart(sz.width, sz.height);
     else if (g_tab == TAB_PANEL) DrawPanelEditor(sz.width, sz.height);
@@ -801,6 +831,8 @@ void Paint() {
     if (g_setupOpen) DrawSetupOverlay(sz.width, sz.height);
     else if (g_settingsOpen) DrawSettingsOverlay(sz.width, sz.height);
     else if (g_tabletOpen) DrawTabletOverlay(sz.width, sz.height);
+    DrawAlarmBanner(sz.width);
+    if (!g_setupOpen && !g_settingsOpen && !g_tabletOpen) DrawTour(sz.width, sz.height);
     if (g_rt->EndDraw() == D2DERR_RECREATE_TARGET) { ReleaseBmp(g_bmpMain); SafeRelease(g_br); SafeRelease(g_hrt); g_rt = nullptr; }
 }
 
@@ -824,6 +856,7 @@ void OnClick(float x, float y) {
         else if (id == HIT_CSV) mon::SetCsv(!g_snap.csvOn);
         else if (id == HIT_INI) { g_tabletOpen = false; OpenSettings(); }
         else if (id == HIT_COMPONENTS) { g_settingsOpen = false; OpenSetup(); }
+        else if (id == HIT_TOUR) { g_settingsOpen = false; g_tabletOpen = false; StartTour(); }
         else if (id == HIT_LOGS) {
             std::wstring dir = mon::ExeDir() + L"\\logs";
             CreateDirectoryW(dir.c_str(), nullptr);
@@ -907,7 +940,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_LBUTTONDOWN: {
         float s = 96.f / GetDpiForWindow(h);
-        if (!g_setupOpen && !g_settingsOpen && !g_tabletOpen && g_tab == TAB_PANEL && PreviewMouseDown(GET_X_LPARAM(lp) * s, GET_Y_LPARAM(lp) * s)) InvalidateRect(h, nullptr, FALSE);
+        if (!g_setupOpen && !g_settingsOpen && !g_tabletOpen && !TourActive() && g_tab == TAB_PANEL && PreviewMouseDown(GET_X_LPARAM(lp) * s, GET_Y_LPARAM(lp) * s)) InvalidateRect(h, nullptr, FALSE);
         return 0;
     }
     case WM_LBUTTONUP: {
@@ -920,7 +953,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         }
         float s = 96.f / GetDpiForWindow(h);
         float x = GET_X_LPARAM(lp) * s, y = GET_Y_LPARAM(lp) * s;
-        if (!g_setupOpen && !g_settingsOpen && !g_tabletOpen && g_tab == TAB_PANEL && In(g_preview, x, y)) return 0;   // handled on button-down
+        if (!g_setupOpen && !g_settingsOpen && !g_tabletOpen && !TourActive() && g_tab == TAB_PANEL && In(g_preview, x, y)) return 0;   // handled on button-down
         OnClick(x, y);
         return 0;
     }
@@ -947,6 +980,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_KEYDOWN:
         if (g_focus) return 0;   // typing goes to the focused field (WM_CHAR)
+        if (!g_setupOpen && !g_settingsOpen && !g_tabletOpen && TourKey(wp)) { InvalidateRect(h, nullptr, FALSE); return 0; }
         if (g_setupOpen || g_settingsOpen || g_tabletOpen) {
             if (wp == VK_ESCAPE) { g_setupOpen = false; g_settingsOpen = false; g_tabletOpen = false; InvalidateRect(h, nullptr, FALSE); }
             return 0;
@@ -972,7 +1006,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         InvalidateRect(h, nullptr, FALSE);
         return 0;
     case WM_APP_PANEL_SNAP:
-        SnapPanel(wp == 0);
+        if (Slot* s = SlotById(int(lp))) SnapPanel(*s, wp == 0);
         return 0;
     case WM_APP_UPDATE:
         OnUpdateResult(reinterpret_cast<UpdResult*>(lp));
@@ -993,7 +1027,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         g_adb.Stop();       // undo adb reverse / stay-awake on connected tablets
         g_tabSrv.Stop();
         if (g_kaThread.joinable()) g_kaThread.join();   // keep-awake video encoder (finishes within a second)
-        ShowPanel(false);
+        CloseAllPanels();
         if (g_nid.cbSize) Shell_NotifyIconW(NIM_DELETE, &g_nid);
         mon::Stop();
         PostQuitMessage(0);
@@ -1136,13 +1170,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     ic.lpszClassName = L"RigSenseIdentify";
     RegisterClassExW(&ic);
 
-    // sensor panel layout
-    g_layoutPath = panel::DefaultPath();
-    if (!panel::Load(g_layoutPath, g_layout)) {
-        g_layout = panel::DefaultLayout();
-        g_layout.display = L"virtual";
-        panel::Save(g_layoutPath, g_layout);
-    }
+    // sensor panel layouts
+    g_ini = mon::DefaultIniPath();
+    const bool firstRun = GetFileAttributesW(g_ini.c_str()) == INVALID_FILE_ATTRIBUTES;
+    LoadSlots();
+    LoadAlarmCfg();
     EnumMonitors();
 
     RECT wa;
@@ -1156,9 +1188,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     DwmSetWindowAttribute(g_hwnd, 20 /*DWMWA_USE_IMMERSIVE_DARK_MODE*/, &dark, sizeof dark);
     TrayInit(smallIcon);
 
-    g_ini = mon::DefaultIniPath();
     mon::Start(mon::LoadConfig(g_ini), g_hwnd, WM_APP_SAMPLE);
     MaybeShowSetupAtStart();
+    InitTour(firstRun);
     upd::CleanupOld();
     g_tabCfg = LoadTabletCfg();
     ApplyTablet();
@@ -1171,7 +1203,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
 
     ShowWindow(g_hwnd, show);
     UpdateWindow(g_hwnd);
-    if (g_layout.autoShow) ShowPanel(true);
+    ShowPanelsAtStart();
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0)) {
         TranslateMessage(&msg);

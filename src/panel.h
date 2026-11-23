@@ -37,6 +37,7 @@ struct Widget {
 };
 
 struct Layout {
+    std::wstring name;                      // shown in the layout list ("Case bar", "Tablet")
     int width = 1920, height = 480;         // panel resolution in pixels
     int cols = 16, rows = 4;
     int gap = 10, radius = 14;              // pixels at the layout resolution
@@ -49,7 +50,8 @@ struct Layout {
     std::vector<Widget> widgets;
 };
 
-std::wstring DefaultPath();                       // panel.txt next to the exe
+std::wstring DefaultPath();                       // panel.txt next to the exe (single layout, before 1.4)
+std::wstring LayoutsDir();                        // layouts\ next to the exe: one panel-<id>.txt per layout
 bool Load(const std::wstring& path, Layout& out);
 bool Save(const std::wstring& path, const Layout& l);
 // Shareable single file (.rigpanel): the layout + the background image embedded as base64.

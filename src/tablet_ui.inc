@@ -3,12 +3,18 @@
 
 tab::Server g_tabSrv;
 tab::Adb g_adb;
-struct TabletCfg { int mode = tab::MODE_OFF; int port = 8086; std::string key; bool stayOn = true; };
+struct TabletCfg { int mode = tab::MODE_OFF; int port = 8086; std::string key; bool stayOn = true; int slot = 0; };
 TabletCfg g_tabCfg;
 std::string g_tabError;
 bool g_tabletOpen = false;
 bool TabletLastSize(int& w, int& h) { return g_tabSrv.Running() && g_tabSrv.LastSize(w, h); }
 void OpenTabletDialog() { g_settingsOpen = false; g_setupOpen = false; g_tabletOpen = true; InvalidateRect(g_hwnd, nullptr, FALSE); }
+// The layout the tablet shows (Tablet dialog); falls back to the first one if it was deleted.
+Slot& TabletSlot() {
+    Slot* s = SlotById(g_tabCfg.slot);
+    return s ? *s : *g_slots[0];
+}
+bool IsTabletSlot(const Slot& s) { return g_tabCfg.mode != tab::MODE_OFF && &s == &TabletSlot(); }
 
 // off-screen render target for frames
 IWICBitmap* g_tabBmp = nullptr;
@@ -24,6 +30,7 @@ TabletCfg LoadTabletCfg() {
     c.mode = !_wcsicmp(b, L"wifi") ? tab::MODE_WIFI : !_wcsicmp(b, L"usb") ? tab::MODE_USB : tab::MODE_OFF;
     c.port = std::clamp(int(GetPrivateProfileIntW(L"Tablet", L"Port", 8086, g_ini.c_str())), 1024, 65535);
     c.stayOn = GetPrivateProfileIntW(L"Tablet", L"StayOn", 1, g_ini.c_str()) != 0;
+    c.slot = int(GetPrivateProfileIntW(L"Tablet", L"Layout", 0, g_ini.c_str()));
     GetPrivateProfileStringW(L"Tablet", L"Key", L"", b, 64, g_ini.c_str());
     for (wchar_t* p = b; *p; ++p) if (iswxdigit(*p)) c.key += char(towlower(*p));
     if (c.key.size() < 16) {
@@ -38,6 +45,7 @@ void SaveTabletCfg() {
     WritePrivateProfileStringW(L"Tablet", L"Mode", m, g_ini.c_str());
     WritePrivateProfileStringW(L"Tablet", L"Port", std::to_wstring(g_tabCfg.port).c_str(), g_ini.c_str());
     WritePrivateProfileStringW(L"Tablet", L"StayOn", g_tabCfg.stayOn ? L"1" : L"0", g_ini.c_str());
+    WritePrivateProfileStringW(L"Tablet", L"Layout", std::to_wstring(TabletSlot().id).c_str(), g_ini.c_str());
     WritePrivateProfileStringW(L"Tablet", L"Key", Wide(g_tabCfg.key).c_str(), g_ini.c_str());
 }
 
@@ -212,28 +220,14 @@ bool EnsureTabletRt(int w, int h) {
     return true;
 }
 
-// Same idea as the fullscreen panel: a tablet with a different shape gets a proportionally regridded copy.
-bool AdaptedFor(int w, int h, panel::Layout& out) {
-    D2D1_RECT_F lb;
-    if (LetterboxRect(float(w), float(h), lb)) return false;   // rotated tablet: letterboxed instead
-    double designAspect = double(g_layout.width) / g_layout.height, aspect = double(w) / h;
-    if (std::fabs(aspect - designAspect) / designAspect <= 0.10) return false;
-    out = g_layout;
-    out.width = w;
-    out.height = h;
-    int c, r;
-    panel::AutoGrid(w, h, c, r);
-    panel::Regrid(out, c, r);
-    return true;
-}
-
 // Called after every sample: render a frame only while a tablet is actually watching.
 void RenderTabletFrame() {
+    if (!g_tabSrv.Running()) return;
+    int a = AlarmActive();
+    g_tabSrv.SetAlarm(g_alarmTabletSound && (a == 1 || (a == 2 && g_alarmPanels)) ? a : 0);   // the page beeps while this is set
     int w = 0, h = 0;
-    if (!g_tabSrv.Running() || !g_tabSrv.Wanted(w, h)) return;
+    if (!g_tabSrv.Wanted(w, h)) return;
     if (!EnsureTabletRt(w, h)) return;
-    panel::Layout adapted;
-    bool useAdapted = AdaptedFor(w, h, adapted);
     auto saveRt = g_rt;
     auto saveBr = g_br;
     auto saveBmp = g_curBmp;
@@ -242,15 +236,11 @@ void RenderTabletFrame() {
     g_br = g_tabBr;
     g_curBmp = &g_bmpTablet;
     g_previewScale = 1.f;
-    if (useAdapted) std::swap(g_layout, adapted);
     g_tabRt->BeginDraw();
     g_tabRt->SetTransform(D2D1::Matrix3x2F::Identity());
-    g_tabRt->Clear(Col(g_layout.bgColor));
-    D2D1_RECT_F lb;
-    if (!useAdapted && LetterboxRect(float(w), float(h), lb)) RenderLetterboxed(float(w), float(h), lb);
-    else RenderPanel(float(w), float(h), false);
+    RenderOnSurface(LayoutOf(TabletSlot()), float(w), float(h));
+    DrawAlarmOverlay(float(w), float(h));
     HRESULT hr = g_tabRt->EndDraw();
-    if (useAdapted) std::swap(g_layout, adapted);
     g_rt = saveRt;
     g_br = saveBr;
     g_curBmp = saveBmp;
@@ -298,7 +288,7 @@ void DrawQr(const std::string& text, D2D1_RECT_F r) {
 void DrawTabletOverlay(float W, float H) {
     g_hits.clear();
     Fill(D2D1::RectF(0, 0, W, H), 0x000000, 0, 0.62f);
-    float cw = std::min(980.f, W - 40), ch = std::min(H - 40, 640.f);
+    float cw = std::min(980.f, W - 40), ch = std::min(H - 40, 680.f);
     float x0 = (W - cw) / 2, y0 = (H - ch) / 2;
     Fill(R(x0, y0, cw, ch), kSurface, 12);
     Stroke(R(x0, y0, cw, ch), kBorder, 12);
@@ -319,7 +309,22 @@ void DrawTabletOverlay(float W, float H) {
         SaveTabletCfg();
         ApplyTablet();
     });
-    y += 44;
+    y += 40;
+    {   // which layout the tablet shows
+        Text(L"Shows layout", R(x, y, 120, 30), Fmt(13, 1), kInk2);
+        Btn(R(x + 120, y, 264, 30), SlotName(TabletSlot()) + L"  ▸", false, [] {
+            int i = SlotIndex(&TabletSlot());
+            g_tabCfg.slot = g_slots[size_t(i + 1) % g_slots.size()]->id;
+            SaveTabletCfg();
+        });
+        Btn(R(x + 392, y, 130, 30), L"Edit this layout", false, [] {
+            SelectSlot(SlotIndex(&TabletSlot()));
+            g_tab = TAB_PANEL;
+            g_tabletOpen = false;
+        });
+        Text(L"Tip: make a layout just for the tablet with “+ New” in the Sensor panel tab.", R(x + 532, y, cw - 580, 30), Fmt(11.5f), kMuted);
+        y += 40;
+    }
     std::wstring st;
     uint32_t sc = kMuted;
     if (g_tabCfg.mode == tab::MODE_OFF) st = L"Off — RigSense is not serving the panel.";
@@ -335,13 +340,17 @@ void DrawTabletOverlay(float W, float H) {
     {   // detected tablet resolution vs. the design
         int tw = 0, th = 0;
         if (TabletLastSize(tw, th)) {
-            std::wstring a = panel::AspectLabel(tw, th), d = panel::AspectLabel(g_layout.width, g_layout.height);
-            double ta = double(tw) / th, da = double(g_layout.width) / g_layout.height;
+            const panel::Layout& TL = LayoutOf(TabletSlot());
+            std::wstring a = panel::AspectLabel(tw, th), d = panel::AspectLabel(TL.width, TL.height);
+            double ta = double(tw) / th, da = double(TL.width) / TL.height;
             bool differs = std::fabs(ta - da) / da > 0.10;
-            Text(F(L"Detected tablet / phone: %d\u00d7%d (%s)  \u00b7  your design: %d\u00d7%d (%s)%s", tw, th, a.c_str(), g_layout.width,
-                   g_layout.height, d.c_str(), differs ? L" \u2014 shown fitted" : L" \u2014 same shape"),
+            Text(F(L"Detected tablet / phone: %d\u00d7%d (%s)  \u00b7  layout: %d\u00d7%d (%s)%s", tw, th, a.c_str(), TL.width,
+                   TL.height, d.c_str(), differs ? L" \u2014 shown fitted" : L" \u2014 same shape"),
                  R(x + 18, y, cw - 300, 20), Fmt(12), differs ? kWarn : kInk2);
-            if (differs) Btn(R(x0 + cw - 24 - 230, y - 4, 230, 28), L"Design for this tablet", true, [tw, th] { DesignFor(tw, th); });
+            if (differs) Btn(R(x0 + cw - 24 - 230, y - 4, 230, 28), L"Design for this tablet", true, [tw, th] {
+                SelectSlot(SlotIndex(&TabletSlot()));
+                DesignFor(tw, th);
+            });
         }
     }
     y += 30;

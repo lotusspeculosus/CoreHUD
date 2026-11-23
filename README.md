@@ -12,11 +12,16 @@ RigSense is a single small native app (C++, Win32 + Direct2D), not a web or Elec
 
 - **12V-2x6 per-pin monitoring for any GPU.** RigSense shows the current of every pin (plus voltage where the device measures it), total connector power, pin imbalance, and session peaks. It reads either the card's own sensor (ASUS ROG Astral) or an external USB meter (Thermal Grizzly WireView Pro II, ElmorLabs PMD2X, or an MSI MPG Ai1300TS/Ai1600TS power supply), so it also works on AMD and Intel cards.
 - **Safety alerts.** You get a warning and a Windows notification when a pin goes over your warning or limit level, when the load becomes unbalanced, or when the sensor stops responding. Optionally, RigSense can start an **emergency shutdown** (a 60-second countdown you can cancel) if a pin stays over its limit.
+- **Alarm on every screen.** When a pin goes over its limit, every open sensor panel and the tablet flash red with a big banner naming the pin, and the tablet can beep too. You'll see it even while playing. **Settings → Test alarm** shows what it looks like.
+- **Connector black box.** RigSense keeps the last minute of per-pin readings in memory. When something alarming happens, it saves that minute plus the minute after it to a CSV file in `logs\blackbox`, so you have hard evidence of what each pin did.
+- **Connector wear check.** RigSense learns how evenly your six pins share the load during gaming, day by day. If one pin slowly starts carrying more of the current than it used to (what a worn, dirty or not-fully-seated connector looks like), you get a warning long before any pin gets near its limit.
 - **Works with any GPU.** NVIDIA cards get full detail through NVML/NVAPI. AMD and Intel GPUs get load, VRAM, temperature, fan, power and memory clock from the same Windows interfaces Task Manager uses. When LibreHardwareMonitor runs, they also get core clock, hotspot, VRAM temperature, voltage and board power in watts.
 - **Sensor panel designer.** Build a panel for any screen size (1920×480 bar, 800×480, 1024×600, portrait, or a custom size) with drag-and-drop widgets:
   - Value, Bar, Gauge, Graph, connector Pins, Clock and Text.
   - Per-widget colour, background style, text size, label, range, warning/critical levels, decimals, and graph history length.
   - Panel background colour or image, grid, spacing and corner radius.
+- **Several layouts, several screens at once.** Keep as many layouts as you like (a case bar, a tablet layout, a second-monitor layout…). Each layout remembers its own display, and they can all be open at the same time: one fullscreen per display, plus floating windows. The tablet shows the layout you pick for it.
+- **Guided tour.** On first start RigSense offers a one-minute walkthrough of the whole app. Take it again any time with the **Tour** button.
 - **Virtual panel.** No case screen yet? Open the panel as a floating "device" window at its real pixel size. Drag it around, scroll to resize, and pin it on top.
 - **Real panel output, one size fits all.** Any panel that Windows sees as a monitor works (HDMI, DisplayPort or USB-C):
   - **Drag and drop:** drag the virtual panel onto your case display and let go. It goes fullscreen there and adopts that display's resolution. If the display's shape differs a lot from your design, the grid rescales and keeps your arrangement.
@@ -36,6 +41,8 @@ RigSense is a single small native app (C++, Win32 + Direct2D), not a web or Elec
 | ![Dashboard](docs/screenshots/dashboard.png) | ![Panel editor](docs/screenshots/panel-editor.png) |
 | **Performance chart** | **Component check** |
 | ![Chart](docs/screenshots/chart.png) | ![Components](docs/screenshots/components.png) |
+| **Alarm on every screen** (Settings → Test alarm, on a 1920×480 bar) | **Guided tour** |
+| ![Connector alarm](docs/screenshots/alarm.png) | ![Guided tour](docs/screenshots/tour.png) |
 
 ---
 
@@ -89,7 +96,9 @@ The **Components** button (also shown at start-up when something is missing) che
 2. Click **Add** to add widgets, or click a sensor in the list on the right. Drag a widget to move it and drag its corner to resize. **Del** removes it and the arrow keys nudge it.
 3. Select a widget to change its type, colour, background, text size, label, range, alert levels and so on.
 4. Click **Open panel**. To put it on your case display, either drag the virtual panel onto that display, or pick the display under **Show on** (**Identify** helps you tell screens apart). Turn on **Open at start** so the panel opens automatically with RigSense and follows the display when it's plugged back in.
-5. **Export panel…** saves a `.rigpanel` file you can share. **Import panel…** loads one.
+5. **Export panel…** saves a `.rigpanel` file you can share. **Import panel…** adds one as a new layout (it never overwrites yours).
+
+**Layouts.** The strip at the top of the Sensor panel tab lists your layouts. Click one to edit it, **+ New** starts a fresh one, **Duplicate** copies the current one, and **Name** renames it. Each layout has its own *Show on* display and *Open at start* setting, and the chips show where each one is open right now. If you put a layout on a display that another layout is using, the other one moves back to a window. **Delete** moves the layout file to `layouts\deleted`, so nothing is lost by accident. Layouts are stored as `layouts\panel-<n>.txt` next to the exe (the first start of 1.4 moves your old `panel.txt` in as "My panel" and keeps the original as a backup).
 
 Sensors from HWiNFO and LibreHardwareMonitor are tied to the hardware, so an imported panel tells you which widgets need a sensor picked on your PC.
 
@@ -102,6 +111,9 @@ The per-pin view exists to catch a failing 12V-2x6 connection early: one pin car
 - **Warning** at `WarnA` (default 8.0 A per pin), **critical** at `LimitA` (default 9.2 A). Both raise a beep and a Windows notification.
 - **Imbalance warning** when the spread between the highest and lowest pin exceeds `SpreadWarnA` (default 2.5 A).
 - **Sensor lost** raises a critical notification, because no data means no protection.
+- **Red alarm on every screen:** open sensor panels and the tablet pulse red with the pin and its current while a pin is over the limit (the tablet beeps after you've tapped it once, since browsers only allow sound after a tap). The main window shows a red banner.
+- **Black box:** every warning, limit, imbalance, sensor-lost or meter-fault event saves `logs\blackbox\blackbox_<date>_<time>_<reason>.csv` with the minute before and the minute after (extended while alerts continue, up to 15 minutes). Each row has all pin voltages and currents, connector and board power, GPU load and temperatures, and the event text. The newest 100 recordings are kept.
+- **Wear check:** for samples with real load (20 A or more through the connector), RigSense stores each pin's average share of the current per day in `logs\wear-<source>.csv`. After 4 days with at least 10 minutes of load each, it compares your last 3 days with your first 3. A pin whose share rose by 2.5 percentage points is shown as *watch*; by 4 points (about 24 % more current on that pin) you get a warning to check the connector. After replacing the cable or reseating the connector, click **Settings → New cable…** so it learns the new situation.
 - `CriticalAction=shutdown` starts a 60-second Windows shutdown if a pin stays over the limit for `CriticalSeconds`. Cancel it with `shutdown /a`.
 
 > RigSense is a monitoring aid and doesn't replace a correctly seated, undamaged cable. It comes with no warranty (see the license). If you see high or unbalanced pin currents, power down and check the connector.
@@ -110,7 +122,7 @@ The per-pin view exists to catch a failing 12V-2x6 connection early: one pin car
 
 ## Settings
 
-Click **Settings** in the app. Everything below can be changed there, and **Save** applies it immediately. The values are stored in `RigSense.ini` next to the exe. *Open RigSense.ini (advanced)* in the Settings window opens the file itself.
+Click **Settings** in the app. Everything below can be changed there, and **Save** applies it immediately. The values are stored in `RigSense.ini` next to the exe. The **RigSense.ini** button in the Settings window opens the file itself.
 
 ![Settings](docs/screenshots/settings.png)
 
@@ -123,6 +135,9 @@ Click **Settings** in the app. Everything below can be changed there, and **Save
 | `CriticalAction` | notify | `notify` or `shutdown` |
 | `CriticalSeconds` | 5 | Seconds over the limit before the critical action runs |
 | `Csv` | 0 | Start with CSV logging on (files go to `logs\`) |
+| `BlackBox` | 1 | Save the minute before and after every connector alert to `logs\blackbox` |
+| `WearCheck` | 1 | Learn the per-pin balance under load and warn when one pin's share creeps up |
+| `[Alarm] Panels` / `TabletSound` | 1 / 1 | Red alarm on open panels and the tablet / beep on the tablet |
 | `PinSource` | auto | `auto` (card sensor, else the first meter found), `astral`, `wireview`, `pmd2x`, `msipsu` or `off` |
 | `LhmPort` | 8085 | LibreHardwareMonitor web server port |
 | `GpuIndex`, `I2CPort`, `I2CAddr`, `Force` | -1, 1, 0x2B, 0 | Advanced options for the on-card sensor |
@@ -140,8 +155,10 @@ You need the Visual Studio 2022 Build Tools (C++ workload) and a Windows 10/11 S
 
 ```bat
 build.bat              :: builds bin\RigSense.exe
-tests\run_tests.bat    :: meter decoders, updater, layout / export / import / fuzz tests
+tests\run_tests.bat    :: meter decoders, updater, wear check, black box, layout / export / import / fuzz tests
 ```
+
+To build a test copy while your own RigSense is running from `bin\`, set `RIGSENSE_OUT` first, e.g. `set RIGSENSE_OUT=C:\temp\RigSense.exe`.
 
 **Console mode:** `RigSense.exe --cli` runs the console tools. Start it from a terminal in the RigSense folder and pipe the output (`| more`), because Windows doesn't wait for a windowed program otherwise:
 
@@ -187,15 +204,27 @@ Open **Sensor panel → Tablet / phone…** and pick a mode:
 
 **One-time USB setup on the tablet:** *Settings → About tablet →* tap **Build number** 7 times, then *Settings → Developer options →* turn on **USB debugging**. Plug the tablet in and tap **Allow**, and the panel opens. Tap it once for fullscreen. In Chrome, *Add to Home screen* gives you an app-like icon.
 
+**Which layout:** *Shows layout* in the dialog picks the layout the tablet shows, so the tablet can have its own design while your case screen shows another one. *Edit this layout* jumps to it in the editor.
+
+**A real app on Android over Wi-Fi:** iPhone/iPad turn *Add to Home Screen* into a fullscreen app on any address. Chrome on Android does that only for secure addresses. USB mode (`127.0.0.1`) counts as secure. Over Wi-Fi, open `chrome://flags/#unsafely-treat-insecure-origin-as-secure` on the tablet, enter the panel's address without the key (e.g. `http://192.168.1.20:8086`), set it to **Enabled**, relaunch, then use *⋮ → Add to home screen → Install*. Give your PC a fixed address in your router so the app keeps working.
+
 The tablet can only **view** the panel; it can't control your PC. The panel updates twice per second while a device is watching and stops rendering when nobody is (frames are about 50–100 KB). When the device is rotated relative to your design, the design is shown fitted. **Design for this tablet** in the dialog, or **Detect screens** in the editor, makes a layout that fills the device exactly.
 
 **Screen still turns off?** On Android, *Developer options → Stay awake* keeps the screen on while charging. Some tablets also need their battery saver turned off for the browser.
 
-Settings (`[Tablet]` in `RigSense.ini`): `Mode` = `off` / `usb` / `wifi` (USB + Wi-Fi), `Port` = 8086, `Key` (the secret; **New secret key** in the dialog replaces it), `StayOn` = 1.
+Settings (`[Tablet]` in `RigSense.ini`): `Mode` = `off` / `usb` / `wifi` (USB + Wi-Fi), `Port` = 8086, `Key` (the secret; **New secret key** in the dialog replaces it), `StayOn` = 1, `Layout` = the layout number the tablet shows.
 
 ---
 
 ## Changelog
+
+**1.4.0**
+- **Layouts ("save slots"):** keep as many sensor panel layouts as you like, each with its own display. Several can be open at once (one fullscreen per display plus floating windows), and the tablet shows its own chosen layout. New / Duplicate / rename / Delete (to `layouts\deleted`) in the editor. Import adds a new layout and never overwrites. Your existing panel moves in automatically as "My panel".
+- **Alarm on every screen:** a pin over its limit makes every open panel and the tablet pulse red with the pin and its current; the tablet can beep, and the main window shows a red banner. **Settings → Test alarm** to try it.
+- **Connector black box:** the minute before and after every connector alert is saved to `logs\blackbox` as CSV (written to disk immediately, so it survives a crash or an emergency shutdown).
+- **Connector wear check:** learns each pin's share of the load per day and warns when one pin slowly takes more than it used to. Shown under the pin chart; **Settings → New cable…** starts over.
+- **Guided tour** for new users (and for this update), any time via the **Tour** button or Settings.
+- Settings: new *Alarms & connector history* section and a *Help & about* row.
 
 **1.3.1**
 - **One file:** RigSense is now a single `RigSense.exe`. The console tools are built in (`RigSense.exe --cli`), and updates download only that file. There's no separate CLI exe and no zip.

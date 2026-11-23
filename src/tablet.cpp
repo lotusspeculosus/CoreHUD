@@ -54,6 +54,17 @@ function lock(){try{if(navigator.wakeLock&&navigator.wakeLock.request){navigator
 document.body.onclick=function(){var d=document.documentElement,f=d.requestFullscreen||d.webkitRequestFullscreen||d.mozRequestFullScreen||d.msRequestFullscreen;if(f){try{f.call(d);}catch(e){}}lock();};
 document.addEventListener('visibilitychange',function(){if(!document.hidden)lock();});
 setInterval(function(){if(v.paused)play();},10000);
+// Connector alarm sound: RigSense says when to beep (the red overlay itself is part of the frame).
+// Browsers only allow sound after a tap, so the first tap (fullscreen) also unlocks audio.
+var ac=null,alarm=0;
+function unlockAudio(){try{if(!ac){var C=window.AudioContext||window.webkitAudioContext;if(C)ac=new C();}if(ac&&ac.resume)ac.resume();}catch(e){}}
+function beep(f,d){if(!ac)return;try{var o=ac.createOscillator(),g=ac.createGain();o.type='square';o.frequency.value=f;g.gain.value=0.25;
+ o.connect(g);g.connect(ac.destination);var t=ac.currentTime;o.start(t);o.stop(t+d);}catch(e){}}
+function pollAlarm(){var x=new XMLHttpRequest();x.onreadystatechange=function(){if(x.readyState==4){alarm=x.status==200?parseInt(x.responseText,10)||0:0;setTimeout(pollAlarm,1000);}};
+ try{x.open('GET','alarm?k='+K+'&t='+(new Date().getTime()),true);x.send();}catch(e){setTimeout(pollAlarm,3000);}}
+setInterval(function(){if(alarm){beep(1100,0.18);setTimeout(function(){beep(820,0.18);},230);}},700);
+document.addEventListener('touchend',unlockAudio,false);document.addEventListener('click',unlockAudio,false);
+pollAlarm();
 lock();tick();
 </script></body></html>)HTML";
 
@@ -244,6 +255,10 @@ void Server::Handle(uintptr_t sock, const std::string& peer) {
         }
         if (f.empty()) Respond(s, 503, "Service Unavailable", "text/plain", "starting", 8);
         else Respond(s, 200, "OK", "image/jpeg", f.data(), f.size());
+    } else if (path == "/alarm") {
+        char a[4];
+        int n = snprintf(a, sizeof a, "%d", alarm_.load());
+        Respond(s, 200, "OK", "text/plain", a, size_t(n));
     } else if (path == "/manifest.json") {
         std::string m = Replace(R"({"name":"RigSense panel","short_name":"RigSense","start_url":"/?k=%KEY%","display":"fullscreen",)"
                                 R"("orientation":"any","background_color":"#0b0e12","theme_color":"#0b0e12",)"

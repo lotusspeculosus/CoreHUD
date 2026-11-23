@@ -5,7 +5,7 @@
 #define RIGSENSE_VER_MAJOR 1
 #define RIGSENSE_VER_MINOR 3
 #define RIGSENSE_VER_PATCH 1
-#define RIGSENSE_VERSION_STR "1.3.1"
+#define RIGSENSE_VERSION_STR "1.4.0"
 
 #ifndef RC_INVOKED
 // build.bat writes build\buildinfo.h with the git commit and build date

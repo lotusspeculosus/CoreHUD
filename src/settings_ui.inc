@@ -57,6 +57,7 @@ void StartUpdateCheck(bool install) {
 }
 
 void TrayNotify(int level, const std::wstring& text);   // app.cpp
+void StartTour();                                          // tour_ui.inc
 
 bool PinCritical() {
     for (int i = 0; i < pins::kMaxPins; ++i) if (g_snap.pinState[i] == 2) return true;
@@ -148,8 +149,12 @@ std::wstring BuildDiagnostics() {
                                                    g_reg.lhmProcess ? L"running, no data (web server off?)" : L"not running") + L"\r\n";
     t += L"HWiNFO Gadget: " + std::wstring(g_reg.gadgetOk ? F(L"%d values", g_reg.gadgetCount) : L"not available") + L"\r\n";
     t += L"RTSS: " + std::wstring(g_reg.rtssOk ? (g_reg.rtssApp.empty() ? L"running" : (L"running, " + g_reg.rtssApp).c_str()) : L"not running") + L"\r\n";
-    t += F(L"Panel: %dx%d, grid %dx%d, %zu widgets, show on %s\r\n", g_layout.width, g_layout.height, g_layout.cols, g_layout.rows,
-           g_layout.widgets.size(), g_layout.display.c_str());
+    for (auto& sl : g_slots) {
+        const auto& L = LayoutOf(*sl);
+        t += F(L"Layout %d: %dx%d, grid %dx%d, %zu widgets, show on %s", sl->id, L.width, L.height, L.cols, L.rows, L.widgets.size(),
+               L.display.c_str()) + std::wstring(sl->wnd ? (sl->virt ? L", open (window)" : L", open (fullscreen)") : L"") + L"\r\n";
+    }
+    if (g_snap.wearOn) t += L"Wear check: " + g_snap.wear.text + L"\r\n";
     t += L"\r\nSensors (group | name | value | key):\r\n";
     for (auto& s : g_reg.All()) {
         t += s.group + L" | " + s.name + L" | " + (s.ok ? F(L"%.*f", s.decimals, s.value) + L" " + s.unit : std::wstring(L"offline")) + L" | " +
@@ -164,6 +169,7 @@ struct SettingsDraft {
     std::wstring warnA, limitA, spreadA, critSec, pollMs, lhmPort, gpuIndex, i2cPort, i2cAddr;
     int critAction = 0, updMode = upd::MODE_AUTO;
     bool beep = true, csv = false, force = false, showComponents = true;
+    bool blackBox = true, wear = true, alarmPanels = true, alarmSound = true;
     std::string pinSource = "auto";
 };
 SettingsDraft g_draft;
@@ -186,6 +192,10 @@ void OpenSettings() {
     g_draft.csv = c.csv;
     g_draft.force = c.force;
     g_draft.pinSource = c.pinSource;
+    g_draft.blackBox = c.blackBox;
+    g_draft.wear = c.wearCheck;
+    g_draft.alarmPanels = g_alarmPanels;
+    g_draft.alarmSound = g_alarmTabletSound;
     g_draft.showComponents = SetupShowAtStart();
     g_draft.updMode = UpdateMode();
     g_settingsOpen = true;
@@ -226,6 +236,11 @@ void SaveSettings() {
     put(L"Monitor", L"Beep", g_draft.beep ? L"1" : L"0");
     put(L"Monitor", L"Csv", g_draft.csv ? L"1" : L"0");
     put(L"Monitor", L"PollMs", g_draft.pollMs);
+    put(L"Monitor", L"BlackBox", g_draft.blackBox ? L"1" : L"0");
+    put(L"Monitor", L"WearCheck", g_draft.wear ? L"1" : L"0");
+    put(L"Alarm", L"Panels", g_draft.alarmPanels ? L"1" : L"0");
+    put(L"Alarm", L"TabletSound", g_draft.alarmSound ? L"1" : L"0");
+    LoadAlarmCfg();
     put(L"Sensor", L"PinSource", Wide(g_draft.pinSource));
     put(L"Sensor", L"LhmPort", g_draft.lhmPort);
     put(L"Sensor", L"GpuIndex", g_draft.gpuIndex);
@@ -249,7 +264,7 @@ void DrawSettingsOverlay(float W, float H) {
     Text(L"Settings", R(x0 + 24, y0 + 16, 300, 30), Fmt(19, 1), kInk);
     Text(L"RigSense " RIGSENSE_VERSION L"  ·  build " RIGSENSE_BUILD, R(x0 + 24, y0 + 16, cw - 48, 30), Fmt(12, 0, 2), kMuted);
 
-    const float rowH = 34, ctl = 28, lab = 210;
+    const float rowH = ch < 690 ? 31.f : 34.f, ctl = rowH - 6, lab = 210;
     float colW = (cw - 72) / 2;
     std::wstring tmp;
     auto section = [&](float x, float& y, const wchar_t* t) {
@@ -290,25 +305,34 @@ void DrawSettingsOverlay(float W, float H) {
     numField(xl, yl, L"Seconds over limit first", SF_CRITSEC, g_draft.critSec, g_draft.critAction == 1 ? L"s (60 s countdown)" : L"s");
     toggle(xl, yl, L"Beep on critical", g_draft.beep);
     yl += 8;
+    section(xl, yl, L"Alarms & connector history");
+    auto toggleBtn = [&](const wchar_t* t, bool& v, const wchar_t* extra, std::function<void()> fn, float extraW) {
+        float cx = label(xl, yl, t);
+        Btn(R(cx, yl, 64, ctl), L"On", v, [&v] { v = true; });
+        Btn(R(cx + 70, yl, 64, ctl), L"Off", !v, [&v] { v = false; });
+        if (extra) Btn(R(cx + 146, yl, extraW, ctl), extra, false, std::move(fn));
+        yl += rowH;
+    };
+    toggleBtn(L"Red alarm on panels + tablet", g_draft.alarmPanels, GetTickCount64() < g_alarmTestUntil ? L"Testing…" : L"Test alarm",
+              [] { g_alarmTestUntil = GetTickCount64() + 6000; }, 104);
+    toggle(xl, yl, L"Alarm sound on the tablet", g_draft.alarmSound);
+    toggleBtn(L"Black box recordings", g_draft.blackBox, L"Open folder", [] {
+        std::wstring dir = mon::BlackBoxDir();
+        CreateDirectoryW((mon::ExeDir() + L"\\logs").c_str(), nullptr);
+        CreateDirectoryW(dir.c_str(), nullptr);
+        ShellExecuteW(g_hwnd, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    }, 104);
+    toggleBtn(L"Connector wear check", g_draft.wear, L"New cable…", [] {
+        if (MessageBoxW(g_hwnd, L"Start learning the pin balance again?\n\nDo this after you replaced the 12V-2x6 cable or reseated the connector, "
+                                L"so the wear check compares against the new situation. (The old history is kept as a .old file.)",
+                        L"RigSense", MB_OKCANCEL | MB_ICONQUESTION) == IDOK)
+            mon::ResetWear();
+    }, 104);
+    yl += 8;
     section(xl, yl, L"Monitoring");
     numField(xl, yl, L"Sample interval", SF_POLL, g_draft.pollMs, L"ms (100-10000)");
     toggle(xl, yl, L"CSV log at start", g_draft.csv);
     toggle(xl, yl, L"Components check at start", g_draft.showComponents);
-    yl += 8;
-    section(xl, yl, L"About");
-    Text(L"RigSense " RIGSENSE_VERSION L"  ·  build " RIGSENSE_BUILD, R(xl, yl, colW, 20), Fmt(12.5f), kInk);
-    yl += 26;
-    Btn(R(xl, yl, 150, ctl), L"GitHub page", false, [] { ShellExecuteW(g_hwnd, L"open", L"https://github.com/lotusspeculosus/RigSense", nullptr, nullptr, SW_SHOWNORMAL); });
-    Btn(R(xl + 158, yl, 150, ctl), L"Copy diagnostics", false, [] {
-        if (CopyText(BuildDiagnostics()))
-            MessageBoxW(g_hwnd, L"Diagnostic info copied to the clipboard.\n\nPaste it into your GitHub issue (Ctrl+V). It contains your hardware and "
-                                L"sensor readings, nothing personal.", L"RigSense", MB_ICONINFORMATION);
-        else
-            MessageBoxW(g_hwnd, L"Couldn't open the clipboard (another program is using it). Please try again.", L"RigSense", MB_ICONWARNING);
-    });
-    yl += ctl + 8;
-    Btn(R(xl, yl, 200, ctl), L"Open RigSense.ini (advanced)", false,
-        [] { ShellExecuteW(g_hwnd, L"open", L"notepad.exe", (L"\"" + g_ini + L"\"").c_str(), nullptr, SW_SHOWNORMAL); });
 
     // ----- right column -----
     float xr = x0 + 48 + colW, yr = y0 + 62;
@@ -356,6 +380,23 @@ void DrawSettingsOverlay(float W, float H) {
         yr += rowH;
         Text(L"Only from this project's GitHub releases · SHA-256 verified before installing.",
              R(xr, yr - 4, colW, 18), Fmt(11.5f), kMuted);
+        yr += 22;
+    }
+    section(xr, yr, L"Help & about");
+    {
+        float bw = (colW - 18) / 4;
+        Btn(R(xr, yr, bw, ctl), L"Take the tour", false, [] { g_settingsOpen = false; StartTour(); });
+        Btn(R(xr + (bw + 6), yr, bw, ctl), L"Copy diagnostics", false, [] {
+            if (CopyText(BuildDiagnostics()))
+                MessageBoxW(g_hwnd, L"Diagnostic info copied to the clipboard.\n\nPaste it into your GitHub issue (Ctrl+V). It contains your hardware and "
+                                    L"sensor readings, nothing personal.", L"RigSense", MB_ICONINFORMATION);
+            else
+                MessageBoxW(g_hwnd, L"Couldn't open the clipboard (another program is using it). Please try again.", L"RigSense", MB_ICONWARNING);
+        }, 12.f);
+        Btn(R(xr + 2 * (bw + 6), yr, bw, ctl), L"GitHub page", false,
+            [] { ShellExecuteW(g_hwnd, L"open", L"https://github.com/lotusspeculosus/RigSense", nullptr, nullptr, SW_SHOWNORMAL); });
+        Btn(R(xr + 3 * (bw + 6), yr, bw, ctl), L"RigSense.ini", false,
+            [] { ShellExecuteW(g_hwnd, L"open", L"notepad.exe", (L"\"" + g_ini + L"\"").c_str(), nullptr, SW_SHOWNORMAL); });
     }
 
     // ----- footer -----

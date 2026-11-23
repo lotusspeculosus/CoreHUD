@@ -17,20 +17,24 @@ contribute to a melted connector or a fire, so safety rules below override every
 
 ## Layout
 - `src/app.cpp` – window, dashboard, chart, event log, tray; includes `panel_ui.inc` (sensor panel editor,
-  renderer, panel window) and `setup_ui.inc` (Components check overlay)
-- `src/monitor.*` – sampler thread: per-pin sources, NVML/NVAPI stats, alerts, CSV, INI (`RigSense.ini`)
+  renderer, layouts/"slots" with one panel window each, alarm overlay), `setup_ui.inc` (Components check overlay)
+  and `tour_ui.inc` (guided tour + main-window alarm banner)
+- `src/monitor.*` – sampler thread: per-pin sources, NVML/NVAPI stats, alerts, CSV, INI (`RigSense.ini`), black box + wear check
+- `src/blackbox.*` – keeps the last minute of samples, writes `logs\blackbox\*.csv` around alerts (flushed every row)
+- `src/wear.*` – per-day pin-share history (`logs\wear-<source>.csv`) and the wear analysis (pure, unit-tested)
 - `src/pinsources.*` – external per-pin meters + pure decoders (`DecodeWireView`, `DecodePmd2x`, `DecodeMsiPsu`, `Linear11`)
 - `src/nvapi_gpu.*` (ROG Astral IT8915FN sensor, read-only), `src/nvml_gpu.*`, `src/gpu_generic.*` (AMD/Intel via DXGI/PDH/D3DKMT)
 - `src/sensors.*` – sensor registry (built-in, HWiNFO Gadget registry, LibreHardwareMonitor web server/WMI, RTSS)
-- `src/panel.*` – sensor panel layout model, `panel.txt`, `.rigpanel` export/import
+- `src/panel.*` – sensor panel layout model, `layouts\panel-<id>.txt` (old single `panel.txt` is migrated), `.rigpanel` export/import
 - `src/components.*` – driver/RTSS/LHM/HWiNFO/adb detection + winget install
 - `src/updater.*`, `settings_ui.inc` – GitHub-release auto-update (SHA-256 verified) and the Settings window; `version.h` = version
 - `src/cli.cpp` – console mode, built into the same exe (`RigSense.exe --cli ...`, dispatched at the top of `wWinMain`). There is one exe only
 - `src/tablet.*`, `tablet_ui.inc` – tablet/phone panel: tiny read-only HTTP server (secret key, GET only), off-screen
   frame rendering to JPEG, `adb reverse` for USB, `/keepawake.mp4` (Media Foundation, delay-loaded) keeps the screen on. `src/third_party/qrcodegen` = Nayuki QR library (MIT, unmodified)
-- Tablet server rules: keep it read-only (no endpoints that change state), keep the key check on every request,
+- Tablet server rules: keep it read-only (no endpoints that change state; `/alarm` only reports), keep the key check on every request,
   USB-only mode must bind to 127.0.0.1 only
-- `tests/` – `test_pins.cpp` (decoders), `test_panel.cpp` (layout, export/import, fuzz)
+- `tests/` – `test_pins.cpp` (decoders), `test_panel.cpp` (layout, export/import, fuzz), `test_update.cpp` (updater),
+  `test_history.cpp` (wear check, black box)
 
 ## Build & test
 - Windows + MSVC (VS 2022 Build Tools): `build.bat`, then `tests\run_tests.bat`.
