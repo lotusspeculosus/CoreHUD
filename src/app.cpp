@@ -25,8 +25,10 @@
 #include "panel.h"
 #include "sensors.h"
 #include "components.h"
-
-#define RIGSENSE_VERSION L"1.2.0"
+#include "updater.h"
+#include "version.h"
+#include <atomic>
+#include <thread>
 
 namespace {
 
@@ -758,6 +760,8 @@ void CheckAlerts() {
     }
 }
 
+#include "settings_ui.inc"
+
 // ---------- render plumbing ----------
 void CreateTarget() {
     if (g_rt) return;
@@ -784,6 +788,7 @@ void Paint() {
     else DrawEvents(sz.width, sz.height);
     DrawTopBar(sz.width);
     if (g_setupOpen) DrawSetupOverlay(sz.width, sz.height);
+    else if (g_settingsOpen) DrawSettingsOverlay(sz.width, sz.height);
     if (g_rt->EndDraw() == D2DERR_RECREATE_TARGET) { ReleaseBmp(g_bmpMain); SafeRelease(g_br); SafeRelease(g_rt); }
 }
 
@@ -805,8 +810,8 @@ void OnClick(float x, float y) {
         else if (id == HIT_RESTART) mon::Restart(mon::LoadConfig(g_ini));
         else if (id == HIT_PEAKS) mon::ResetPeaks();
         else if (id == HIT_CSV) mon::SetCsv(!g_snap.csvOn);
-        else if (id == HIT_INI) ShellExecuteW(g_hwnd, L"open", L"notepad.exe", (L"\"" + g_ini + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
-        else if (id == HIT_COMPONENTS) OpenSetup();
+        else if (id == HIT_INI) OpenSettings();
+        else if (id == HIT_COMPONENTS) { g_settingsOpen = false; OpenSetup(); }
         else if (id == HIT_LOGS) {
             std::wstring dir = mon::ExeDir() + L"\\logs";
             CreateDirectoryW(dir.c_str(), nullptr);
@@ -826,6 +831,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         mon::GetEvents(g_events);
         OnSampleForPanel();
         if (g_setupOpen && GetTickCount() - g_compsTick > 3000) RecheckComponents();
+        if (g_upd.applyPending) TryApplyUpdate();
         CheckAlerts();
         {
             double connW = 0;
@@ -887,7 +893,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_LBUTTONDOWN: {
         float s = 96.f / GetDpiForWindow(h);
-        if (!g_setupOpen && g_tab == TAB_PANEL && PreviewMouseDown(GET_X_LPARAM(lp) * s, GET_Y_LPARAM(lp) * s)) InvalidateRect(h, nullptr, FALSE);
+        if (!g_setupOpen && !g_settingsOpen && g_tab == TAB_PANEL && PreviewMouseDown(GET_X_LPARAM(lp) * s, GET_Y_LPARAM(lp) * s)) InvalidateRect(h, nullptr, FALSE);
         return 0;
     }
     case WM_LBUTTONUP: {
@@ -900,7 +906,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         }
         float s = 96.f / GetDpiForWindow(h);
         float x = GET_X_LPARAM(lp) * s, y = GET_Y_LPARAM(lp) * s;
-        if (!g_setupOpen && g_tab == TAB_PANEL && In(g_preview, x, y)) return 0;   // handled on button-down
+        if (!g_setupOpen && !g_settingsOpen && g_tab == TAB_PANEL && In(g_preview, x, y)) return 0;   // handled on button-down
         OnClick(x, y);
         return 0;
     }
@@ -927,8 +933,8 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_KEYDOWN:
         if (g_focus) return 0;   // typing goes to the focused field (WM_CHAR)
-        if (g_setupOpen) {
-            if (wp == VK_ESCAPE) { g_setupOpen = false; InvalidateRect(h, nullptr, FALSE); }
+        if (g_setupOpen || g_settingsOpen) {
+            if (wp == VK_ESCAPE) { g_setupOpen = false; g_settingsOpen = false; InvalidateRect(h, nullptr, FALSE); }
             return 0;
         }
         if (g_tab == TAB_PANEL && g_sel >= 0 && g_sel < int(g_layout.widgets.size())) {
@@ -953,6 +959,15 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_APP_PANEL_SNAP:
         SnapPanel(wp == 0);
+        return 0;
+    case WM_APP_UPDATE:
+        OnUpdateResult(reinterpret_cast<UpdResult*>(lp));
+        return 0;
+    case WM_TIMER:
+        if (wp == TIMER_UPDATE) {
+            SetTimer(h, TIMER_UPDATE, 6 * 60 * 60 * 1000, nullptr);   // then every 6 hours
+            if (UpdateMode() != upd::MODE_OFF) StartUpdateCheck(false);
+        }
         return 0;
     case WM_APP_TRAY:
         if (LOWORD(lp) == WM_LBUTTONUP || LOWORD(lp) == NIN_BALLOONUSERCLICK) {
@@ -1007,6 +1022,20 @@ HICON MakeIcon(int size) {
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    // After an auto-update the new version is started with --wait-pid <old pid>: wait for the old one to exit.
+    bool justUpdated = false;
+    {
+        int argc = 0;
+        LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+        for (int i = 1; argv && i < argc; ++i) {
+            if (!wcscmp(argv[i], L"--updated")) justUpdated = true;
+            if (!wcscmp(argv[i], L"--wait-pid") && i + 1 < argc) {
+                HANDLE old = OpenProcess(SYNCHRONIZE, FALSE, DWORD(_wtoi(argv[++i])));
+                if (old) { WaitForSingleObject(old, 15000); CloseHandle(old); }
+            }
+        }
+        if (argv) LocalFree(argv);
+    }
     HANDLE single = CreateMutexW(nullptr, TRUE, L"Local\\RigSenseSingleInstance");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         HWND other = FindWindowW(L"RigSenseWnd", nullptr);
@@ -1071,6 +1100,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     g_ini = mon::DefaultIniPath();
     mon::Start(mon::LoadConfig(g_ini), g_hwnd, WM_APP_SAMPLE);
     MaybeShowSetupAtStart();
+    upd::CleanupOld();
+    if (justUpdated) {
+        mon::LogEvent(0, L"Updated to RigSense " RIGSENSE_VERSION L" (build " RIGSENSE_BUILD L")");
+        TrayNotify(1, L"RigSense was updated to " RIGSENSE_VERSION L".");
+    }
+    SetTimer(g_hwnd, TIMER_UPDATE, 20 * 1000, nullptr);   // first update check 20 s after start
 
     ShowWindow(g_hwnd, show);
     UpdateWindow(g_hwnd);

@@ -26,6 +26,10 @@ std::map<int, std::wstring> g_fieldInit;
 // panel window
 HWND g_panelWnd = nullptr;
 bool g_panelVirtual = false;    // virtual panel = floating "device" window with a bezel
+// When the fullscreen display has a clearly different shape than the design, the panel window renders an
+// adapted copy (proportionally regridded). The saved design (g_layout / panel.txt) is never modified.
+bool g_hasAdapted = false;
+panel::Layout g_adapted;
 float g_virtScale = 1.f;
 bool g_virtTop = false;
 constexpr float kBezel = 18.f, kBezelBottom = 30.f;
@@ -69,9 +73,12 @@ void ToggleVirtualTop() {
     if (g_panelWnd) SetWindowPos(g_panelWnd, g_virtTop ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
+void RefreshAdapted();
+
 void SaveLayout() {
     panel::Clamp(g_layout);
     panel::Save(g_layoutPath, g_layout);
+    RefreshAdapted();
     if (g_panelWnd) {
         if (g_panelVirtual) SetVirtualScale(g_virtScale);   // panel size may have changed
         InvalidateRect(g_panelWnd, nullptr, FALSE);
@@ -613,7 +620,7 @@ void AddWidget(panel::WType t, const std::string& sensor = "") {
 }
 
 void ShowPanel(bool on);
-void AdoptResolution(int w, int h);
+void RefreshAdapted();
 
 void ExportPanel() {
     wchar_t file[MAX_PATH] = L"my-panel.rigpanel";
@@ -787,7 +794,6 @@ void DrawPanelEditor(float W, float H) {
                 else {
                     auto& m = g_mons[size_t(opts[n])];
                     g_layout.display = m.dev;
-                    AdoptResolution(m.rc.right - m.rc.left, m.rc.bottom - m.rc.top);
                 }
                 bool open = g_panelWnd != nullptr;
                 ShowPanel(false);
@@ -1148,7 +1154,9 @@ void PaintPanelWindow() {
         g_prt->PopAxisAlignedClip();
     } else {
         g_prt->Clear(Col(g_layout.bgColor));
+        if (g_hasAdapted) std::swap(g_layout, g_adapted);   // render-only, swapped straight back
         RenderPanel(sz.width, sz.height, false);
+        if (g_hasAdapted) std::swap(g_layout, g_adapted);
     }
     HRESULT hr = g_prt->EndDraw();
     g_rt = saveRt;
@@ -1170,6 +1178,7 @@ LRESULT CALLBACK PanelProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     case WM_ERASEBKGND: return 1;
     case WM_SIZE:
         if (g_prt) g_prt->Resize(D2D1::SizeU(LOWORD(lp), HIWORD(lp)));
+        if (h == g_panelWnd) RefreshAdapted();   // display resolution changed
         InvalidateRect(h, nullptr, FALSE);
         return 0;
     case WM_NCHITTEST:
@@ -1268,6 +1277,7 @@ void ShowPanel(bool on) {
                                      mon->rc.left, mon->rc.top, mon->rc.right - mon->rc.left, mon->rc.bottom - mon->rc.top,
                                      nullptr, nullptr, inst, nullptr);
         g_panelVirtual = false;
+        RefreshAdapted();
     } else {
         // Virtual panel: a floating device-like window at the panel's real pixel size (scaled down if it doesn't fit).
         g_panelVirtual = true;
@@ -1284,21 +1294,28 @@ void ShowPanel(bool on) {
     if (g_panelWnd) ShowWindow(g_panelWnd, g_panelVirtual ? SW_SHOW : SW_SHOWNOACTIVATE);
 }
 
-// Use a display's resolution for the panel. Same shape (e.g. a 1920x480 bar for a 1920x480 design): kept as
-// designed. Clearly different shape: the grid is rescaled proportionally so widgets keep their arrangement
-// with roughly square cells instead of being stretched.
-void AdoptResolution(int w, int h) {
-    double oldAspect = double(g_layout.width) / g_layout.height, newAspect = double(w) / h;
-    g_layout.width = w;
-    g_layout.height = h;
-    if (std::fabs(newAspect - oldAspect) / oldAspect > 0.10) {
-        int c, r;
-        panel::AutoGrid(w, h, c, r);
-        panel::Regrid(g_layout, c, r);
-    }
+// Same shape as the design (e.g. a 1920x480 bar for a 1920x480 design): rendered as designed, just scaled.
+// Clearly different shape: render a proportionally regridded copy so widgets keep their arrangement with
+// roughly square cells instead of being stretched. The design itself stays untouched.
+void RefreshAdapted() {
+    g_hasAdapted = false;
+    if (!g_panelWnd || g_panelVirtual) return;
+    RECT rc;
+    GetClientRect(g_panelWnd, &rc);
+    int w = rc.right - rc.left, h = rc.bottom - rc.top;
+    if (w <= 0 || h <= 0) return;
+    double designAspect = double(g_layout.width) / g_layout.height, aspect = double(w) / h;
+    if (std::fabs(aspect - designAspect) / designAspect <= 0.10) return;
+    g_adapted = g_layout;
+    g_adapted.width = w;
+    g_adapted.height = h;
+    int c, r;
+    panel::AutoGrid(w, h, c, r);
+    panel::Regrid(g_adapted, c, r);
+    g_hasAdapted = true;
 }
 
-// Fullscreen on a display (adopting its resolution) or back to the floating window.
+// Fullscreen on a display or back to the floating window (the design itself is not changed).
 void SnapPanel(bool toDisplay) {
     EnumMonitors();
     if (toDisplay) {
@@ -1306,7 +1323,6 @@ void SnapPanel(bool toDisplay) {
         if (i < 0 || g_mons[size_t(i)].primary) return;
         const auto& m = g_mons[size_t(i)];
         g_layout.display = m.dev;
-        AdoptResolution(m.rc.right - m.rc.left, m.rc.bottom - m.rc.top);
     } else {
         g_layout.display = L"virtual";
     }

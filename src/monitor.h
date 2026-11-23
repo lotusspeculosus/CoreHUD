@@ -83,6 +83,7 @@ void Start(const Config& cfg, void* notifyHwnd, unsigned notifyMsg);
 void Stop();
 void Restart(const Config& cfg);
 void ResetPeaks();
+void LogEvent(int level, const std::wstring& text);   // add an entry to the event log (0 info, 1 warn, 2 critical)
 void SetCsv(bool on);
 
 void Get(Snapshot& out);

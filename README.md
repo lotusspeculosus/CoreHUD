@@ -25,6 +25,8 @@ RigSense is a single small native app (C++, Win32 + Direct2D), not a web or Elec
 - **Export / import.** Share a finished panel as one `.rigpanel` file. The background image is included.
 - **More sensors for free.** RigSense reads every CPU, motherboard, RAM, drive and fan sensor from **LibreHardwareMonitor** or **HWiNFO's free Gadget mode**. It does not use HWiNFO shared memory, which has a 12-hour limit in the free version. It also reads **FPS and frame time** from RTSS.
 - **Component check.** RigSense detects your GPU driver, RTSS, LibreHardwareMonitor and HWiNFO, links each download page, and can install the latest version for you through `winget`.
+- **Automatic updates.** When a new release is published, RigSense downloads it from this repository's GitHub releases, verifies its SHA-256 checksum, and restarts into the new version. It never restarts while a connector alert is active. You can switch this to *Notify me* or *Off*.
+- **Settings window.** Change the connector protection, per-pin source, monitoring and update options in the app, with Save/Cancel. The version and build (git commit and date) are shown in Settings and in the exe's file properties.
 - Performance chart, event log, CSV logging, and a tray icon with notifications.
 
 | Dashboard | Sensor panel designer |
@@ -104,9 +106,11 @@ The per-pin view exists to catch a failing 12V-2x6 connection early: one pin car
 
 ---
 
-## Settings (`RigSense.ini`)
+## Settings
 
-Click **Settings** in the app to edit the file, then click **Restart sensor**.
+Click **Settings** in the app. Everything below can be changed there, and **Save** applies it immediately. The values are stored in `RigSense.ini` next to the exe. *Open RigSense.ini (advanced)* in the Settings window opens the file itself.
+
+![Settings](docs/screenshots/settings.png)
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -120,6 +124,11 @@ Click **Settings** in the app to edit the file, then click **Restart sensor**.
 | `PinSource` | auto | `auto` (card sensor, else the first meter found), `astral`, `wireview`, `pmd2x`, `msipsu` or `off` |
 | `LhmPort` | 8085 | LibreHardwareMonitor web server port |
 | `GpuIndex`, `I2CPort`, `I2CAddr`, `Force` | -1, 1, 0x2B, 0 | Advanced options for the on-card sensor |
+| `[Updates] Mode` | auto | `auto` (download, verify, install and restart), `notify` (tell me, I click Install), or `off` |
+
+### Updates & privacy
+
+RigSense checks `api.github.com` for a newer release 20 seconds after starting and then every 6 hours. The request carries only a `RigSense/<version>` user agent, and nothing about your PC is sent. Updates are downloaded only from GitHub hosts over HTTPS. The new `RigSense.exe` must match the SHA-256 in the release's `SHA256SUMS.txt` before it's installed. The old exe is kept as `RigSense.exe.old` until the next start. If RigSense lives in a folder you can't write to (e.g. Program Files), you'll get a notification instead.
 
 ---
 
@@ -129,12 +138,14 @@ You need the Visual Studio 2022 Build Tools (C++ workload) and a Windows 10/11 S
 
 ```bat
 build.bat              :: builds bin\RigSense.exe and bin\rigsense-cli.exe
-tests\run_tests.bat    :: meter decoders + layout / export / import / fuzz tests
+tests\run_tests.bat    :: meter decoders, updater, layout / export / import / fuzz tests
 ```
 
 `rigsense-cli.exe` is a console tool. `rigsense-cli -n 0` streams the on-card per-pin readings, `rigsense-cli --meters` finds and reads an external per-pin meter, and `rigsense-cli --sensors` lists every sensor RigSense can see.
 
 If you own a WireView Pro II, PMD2X or MSI Ai1300TS/Ai1600TS, please run `rigsense-cli --meters` and open an issue with the output (working or not). That's how these sources move from experimental to verified.
+
+**Releasing (maintainers):** bump the numbers in `src/version.h`, build, then publish a GitHub release tagged `vX.Y.Z` with these assets: `RigSense.exe`, `rigsense-cli.exe`, `SHA256SUMS.txt` (`<sha256>  <file name>` per line), and the zip. Installed copies pick it up automatically.
 
 ### How the per-pin sensor is read
 
@@ -152,7 +163,10 @@ New issues get an automatic first look: an AI assistant (Claude) checks the repo
 
 ## Changelog
 
-**1.2.0** (in the repository, not yet released)
+**1.2.0**
+- Automatic updates from GitHub releases, SHA-256 verified, with Automatic / Notify me / Off modes. Updates never apply while a connector alert is active.
+- New in-app Settings window, replacing editing the INI in Notepad.
+- Version and build (git commit + date) shown in Settings, the Components dialog and the exe's file properties.
 - Drag the virtual panel onto any display and it goes fullscreen there. A right-click menu offers *Back to window*, *Fullscreen on display…*, and turning snapping on or off.
 - The display picker shows monitor names and resolutions, and **Identify** shows a number on each screen.
 - The panel follows its display automatically: it falls back to a window when the display disconnects and returns to it when it reconnects.

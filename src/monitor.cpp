@@ -452,6 +452,7 @@ void Restart(const Config& cfg) {
 }
 
 void ResetPeaks() { g_resetPeaks = true; }
+void LogEvent(int level, const std::wstring& text) { AddEvent(level, text); }
 void SetCsv(bool on) { g_csvRequest = on ? 1 : 0; }
 
 void Get(Snapshot& out) {
