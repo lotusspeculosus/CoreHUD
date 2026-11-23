@@ -6,7 +6,7 @@ CoreHUD puts your PC's sensors (GPU, CPU, RAM, drives, fans, FPS) on panels you 
 
 **Optional extra:** if your graphics card has a 12V-2x6 (12VHPWR) power connector, CoreHUD can also watch that connector pin by pin, with a red alarm on every screen if a pin overloads. This needs an ASUS ROG Astral card (the only cards with a built-in per-pin sensor) or a USB meter such as the Thermal Grizzly WireView Pro II. See [Optional: 12V-2x6 per-pin monitoring](#optional-12v-2x6-per-pin-monitoring).
 
-![CoreHUD demo: a live sensor panel, resizing a widget in the designer, and the optional connector alarm](docs/screenshots/demo.gif)
+![CoreHUD demo: a live sensor panel, adding and resizing a gauge in the drag-and-drop designer, and layouts for a case bar, a tablet and the desktop](docs/screenshots/demo.gif)
 
 ---
 
