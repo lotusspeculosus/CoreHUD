@@ -139,6 +139,14 @@ ROG Astral cards have an ITE IT8915FN chip on the GPU's own I²C bus. RigSense r
 
 ---
 
+## Reporting bugs & ideas
+
+Open an [issue](../../issues/new/choose) and pick a form: **Bug report**, **Per-pin meter test report** (WireView Pro II / PMD2X / MSI PSU owners, please!) or **Feature request**. Report security problems privately via [Report a vulnerability](../../security/advisories/new).
+
+Every pull request is compiled and tested automatically on Windows ("Build & test" workflow), and its build can be downloaded from the run's artifacts.
+
+---
+
 ## Changelog
 
 **1.1.0**

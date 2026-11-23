@@ -1,0 +1,31 @@
+# Builds RigSense with MSVC on Windows and runs the unit tests for every push and pull request,
+# so fixes (including ones Claude proposes) are compiled and tested before they're merged.
+name: Build & test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build
+        shell: cmd
+        run: build.bat
+      - name: Unit tests
+        shell: cmd
+        run: tests\run_tests.bat
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: RigSense-${{ github.sha }}
+          path: |
+            bin/RigSense.exe
+            bin/rigsense-cli.exe

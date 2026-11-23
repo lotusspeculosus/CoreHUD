@@ -1,0 +1,77 @@
+name: Bug report
+description: Something doesn't work or shows wrong values
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! The more of this you fill in, the faster it gets fixed.
+
+        > ⚠️ **Connector danger?** If you smell burning, see discoloured plastic or a melted 12V-2x6 plug: **power off and unplug the PC first.** Then report.
+  - type: input
+    id: version
+    attributes:
+      label: RigSense version
+      description: Shown in the Components dialog (top-right button), e.g. 1.1.0
+      placeholder: "1.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part?
+      options:
+        - Per-pin monitoring / alerts / emergency shutdown
+        - Dashboard / GPU status
+        - Sensor panel designer
+        - Virtual panel / case display
+        - Extra sensors (LibreHardwareMonitor / HWiNFO / RTSS)
+        - Components check / installing
+        - Performance chart / event log / CSV
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: vendor
+    attributes:
+      label: GPU vendor
+      options: [NVIDIA, AMD, Intel, Several GPUs]
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU model and per-pin source
+      description: Exact card, and how pins are measured (on-card sensor / WireView Pro II / PMD2X / MSI PSU / none)
+      placeholder: "ASUS ROG Astral RTX 5090 OC, on-card sensor"
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: "Windows 11 24H2"
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: Include what you expected instead. Screenshots help a lot (paste them here).
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the Sensor panel tab
+        2. ...
+  - type: textarea
+    id: events
+    attributes:
+      label: Event log
+      description: Event log tab → copy the relevant lines (or attach a CSV log from the logs folder)
+      render: text
+  - type: textarea
+    id: sensors
+    attributes:
+      label: Output of `rigsense-cli --sensors`
+      description: Run it in the RigSense folder (PowerShell → `.\rigsense-cli.exe --sensors`) and paste the result
+      render: text

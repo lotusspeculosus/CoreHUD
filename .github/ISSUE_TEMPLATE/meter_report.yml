@@ -1,0 +1,54 @@
+name: Per-pin meter test report
+description: You own a WireView Pro II, ElmorLabs PMD2X or MSI MPG Ai1300TS/Ai1600TS - tell us if it works
+labels: [meter-test]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Support for these meters was built from published protocol notes and is **experimental** until owners confirm it.
+        Your report - working or not - is what moves it to "verified". Close the vendor app (WireView software / MSI Center) before testing.
+  - type: dropdown
+    id: device
+    attributes:
+      label: Device
+      options:
+        - Thermal Grizzly WireView Pro II
+        - ElmorLabs PMD2X
+        - MSI MPG Ai1600TS
+        - MSI MPG Ai1300TS
+        - Other per-pin device (please name it below)
+    validations:
+      required: true
+  - type: input
+    id: firmware
+    attributes:
+      label: Device firmware version (if known)
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options:
+        - Detected and values look right
+        - Detected but values look wrong
+        - Not detected
+        - Errors / crashes
+    validations:
+      required: true
+  - type: textarea
+    id: meters
+    attributes:
+      label: Output of `rigsense-cli --meters`
+      description: In the RigSense folder run `.\rigsense-cli.exe --meters` (with some GPU load if you can) and paste everything
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: compare
+    attributes:
+      label: Values shown by the vendor app at the same time
+      description: e.g. per-pin amps from the WireView software or MSI Center, so we can compare
+  - type: input
+    id: version
+    attributes:
+      label: RigSense version
+      placeholder: "1.1.0"

@@ -1,0 +1,20 @@
+name: Feature request
+description: Suggest a new widget, sensor source, device or improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like?
+      description: Describe the feature and how you'd use it
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why is it useful?
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware involved (if any)
+      description: e.g. a new per-pin meter, PSU, case display, GPU
