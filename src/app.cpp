@@ -27,6 +27,9 @@
 #include "components.h"
 #include "updater.h"
 #include "version.h"
+#include "tablet.h"
+#include "third_party/qrcodegen/qrcodegen.hpp"
+#include <objbase.h>
 #include <atomic>
 #include <thread>
 
@@ -50,7 +53,8 @@ D2D1_COLOR_F Col(uint32_t rgb, float a = 1.f) {
 HWND g_hwnd = nullptr;
 ID2D1Factory* g_d2d = nullptr;
 IDWriteFactory* g_dw = nullptr;
-ID2D1HwndRenderTarget* g_rt = nullptr;
+ID2D1RenderTarget* g_rt = nullptr;        // what all drawing code uses (main window, panel window or off-screen)
+ID2D1HwndRenderTarget* g_hrt = nullptr;   // the main window's own target
 ID2D1SolidColorBrush* g_br = nullptr;
 ID2D1StrokeStyle* g_dash = nullptr;
 std::map<int, IDWriteTextFormat*> g_fmts;
@@ -761,6 +765,7 @@ void CheckAlerts() {
 }
 
 #include "settings_ui.inc"
+#include "tablet_ui.inc"
 
 // ---------- render plumbing ----------
 void CreateTarget() {
@@ -769,7 +774,9 @@ void CreateTarget() {
     GetClientRect(g_hwnd, &rc);
     float dpi = float(GetDpiForWindow(g_hwnd));
     auto props = D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1::PixelFormat(), dpi, dpi);
-    g_d2d->CreateHwndRenderTarget(props, D2D1::HwndRenderTargetProperties(g_hwnd, D2D1::SizeU(rc.right, rc.bottom)), &g_rt);
+    g_d2d->CreateHwndRenderTarget(props, D2D1::HwndRenderTargetProperties(g_hwnd, D2D1::SizeU(rc.right, rc.bottom)), &g_hrt);
+    g_rt = g_hrt;
+    if (!g_rt) return;
     g_rt->CreateSolidColorBrush(Col(kInk), &g_br);
     g_rt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
 }
@@ -789,7 +796,8 @@ void Paint() {
     DrawTopBar(sz.width);
     if (g_setupOpen) DrawSetupOverlay(sz.width, sz.height);
     else if (g_settingsOpen) DrawSettingsOverlay(sz.width, sz.height);
-    if (g_rt->EndDraw() == D2DERR_RECREATE_TARGET) { ReleaseBmp(g_bmpMain); SafeRelease(g_br); SafeRelease(g_rt); }
+    else if (g_tabletOpen) DrawTabletOverlay(sz.width, sz.height);
+    if (g_rt->EndDraw() == D2DERR_RECREATE_TARGET) { ReleaseBmp(g_bmpMain); SafeRelease(g_br); SafeRelease(g_hrt); g_rt = nullptr; }
 }
 
 void OnClick(float x, float y) {
@@ -810,7 +818,7 @@ void OnClick(float x, float y) {
         else if (id == HIT_RESTART) mon::Restart(mon::LoadConfig(g_ini));
         else if (id == HIT_PEAKS) mon::ResetPeaks();
         else if (id == HIT_CSV) mon::SetCsv(!g_snap.csvOn);
-        else if (id == HIT_INI) OpenSettings();
+        else if (id == HIT_INI) { g_tabletOpen = false; OpenSettings(); }
         else if (id == HIT_COMPONENTS) { g_settingsOpen = false; OpenSetup(); }
         else if (id == HIT_LOGS) {
             std::wstring dir = mon::ExeDir() + L"\\logs";
@@ -832,6 +840,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         OnSampleForPanel();
         if (g_setupOpen && GetTickCount() - g_compsTick > 3000) RecheckComponents();
         if (g_upd.applyPending) TryApplyUpdate();
+        RenderTabletFrame();
         CheckAlerts();
         {
             double connW = 0;
@@ -857,12 +866,13 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
     }
     case WM_ERASEBKGND: return 1;
     case WM_SIZE:
-        if (g_rt) g_rt->Resize(D2D1::SizeU(LOWORD(lp), HIWORD(lp)));
+        if (g_hrt) g_hrt->Resize(D2D1::SizeU(LOWORD(lp), HIWORD(lp)));
         InvalidateRect(h, nullptr, FALSE);
         return 0;
     case WM_DPICHANGED: {
         SafeRelease(g_br);
-        SafeRelease(g_rt);
+        SafeRelease(g_hrt);
+    g_rt = nullptr;
         auto r = reinterpret_cast<RECT*>(lp);
         SetWindowPos(h, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
         return 0;
@@ -893,7 +903,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_LBUTTONDOWN: {
         float s = 96.f / GetDpiForWindow(h);
-        if (!g_setupOpen && !g_settingsOpen && g_tab == TAB_PANEL && PreviewMouseDown(GET_X_LPARAM(lp) * s, GET_Y_LPARAM(lp) * s)) InvalidateRect(h, nullptr, FALSE);
+        if (!g_setupOpen && !g_settingsOpen && !g_tabletOpen && g_tab == TAB_PANEL && PreviewMouseDown(GET_X_LPARAM(lp) * s, GET_Y_LPARAM(lp) * s)) InvalidateRect(h, nullptr, FALSE);
         return 0;
     }
     case WM_LBUTTONUP: {
@@ -906,7 +916,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         }
         float s = 96.f / GetDpiForWindow(h);
         float x = GET_X_LPARAM(lp) * s, y = GET_Y_LPARAM(lp) * s;
-        if (!g_setupOpen && !g_settingsOpen && g_tab == TAB_PANEL && In(g_preview, x, y)) return 0;   // handled on button-down
+        if (!g_setupOpen && !g_settingsOpen && !g_tabletOpen && g_tab == TAB_PANEL && In(g_preview, x, y)) return 0;   // handled on button-down
         OnClick(x, y);
         return 0;
     }
@@ -933,8 +943,8 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_KEYDOWN:
         if (g_focus) return 0;   // typing goes to the focused field (WM_CHAR)
-        if (g_setupOpen || g_settingsOpen) {
-            if (wp == VK_ESCAPE) { g_setupOpen = false; g_settingsOpen = false; InvalidateRect(h, nullptr, FALSE); }
+        if (g_setupOpen || g_settingsOpen || g_tabletOpen) {
+            if (wp == VK_ESCAPE) { g_setupOpen = false; g_settingsOpen = false; g_tabletOpen = false; InvalidateRect(h, nullptr, FALSE); }
             return 0;
         }
         if (g_tab == TAB_PANEL && g_sel >= 0 && g_sel < int(g_layout.widgets.size())) {
@@ -976,6 +986,8 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         }
         return 0;
     case WM_DESTROY:
+        g_adb.Stop();       // undo adb reverse / stay-awake on connected tablets
+        g_tabSrv.Stop();
         ShowPanel(false);
         if (g_nid.cbSize) Shell_NotifyIconW(NIM_DELETE, &g_nid);
         mon::Stop();
@@ -1101,6 +1113,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     mon::Start(mon::LoadConfig(g_ini), g_hwnd, WM_APP_SAMPLE);
     MaybeShowSetupAtStart();
     upd::CleanupOld();
+    g_tabCfg = LoadTabletCfg();
+    ApplyTablet();
+    MakeTabletIcon();
     if (justUpdated) {
         mon::LogEvent(0, L"Updated to RigSense " RIGSENSE_VERSION L" (build " RIGSENSE_BUILD L")");
         TrayNotify(1, L"RigSense was updated to " RIGSENSE_VERSION L".");
@@ -1117,11 +1132,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     }
     for (auto& f : g_fmts) f.second->Release();
     g_reg.Shutdown();
+    ReleaseTabletRt();
     ReleaseBmp(g_bmpMain);
     SafeRelease(g_wic);
     SafeRelease(g_round);
     SafeRelease(g_br);
-    SafeRelease(g_rt);
+    SafeRelease(g_hrt);
+    g_rt = nullptr;
     SafeRelease(g_dash);
     SafeRelease(g_dw);
     SafeRelease(g_d2d);

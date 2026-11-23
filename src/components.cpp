@@ -1,4 +1,5 @@
 #include "components.h"
+#include "tablet.h"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -193,6 +194,19 @@ std::vector<Component> Check() {
         if (p && !p->path.empty()) c.exePath = p->path;
         if (c.exePath.empty()) c.exePath = FindWingetPortable(L"LibreHardwareMonitor.LibreHardwareMonitor", L"LibreHardwareMonitor.exe");
         c.installed = !c.exePath.empty() || c.running;
+        out.push_back(c);
+    }
+    {   // Android platform-tools (adb): only needed for a USB tablet/phone panel
+        Component c;
+        c.id = L"adb";
+        c.name = L"Android platform-tools (adb)";
+        c.purpose = L"Optional, free \u2014 lets an old Android tablet or phone show the panel over USB.";
+        c.hint = L"Sensor panel \u203A Tablet / phone. Wi-Fi tablets and iPads don't need this.";
+        c.url = L"https://developer.android.com/tools/releases/platform-tools";
+        c.wingetId = L"Google.PlatformTools";
+        c.exePath = tab::FindAdb();
+        c.installed = !c.exePath.empty();
+        c.running = c.installed;
         out.push_back(c);
     }
     {   // HWiNFO

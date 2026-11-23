@@ -266,6 +266,27 @@ Layout DefaultLayout() {
     return l;
 }
 
+std::wstring AspectLabel(int w, int h) {
+    if (w <= 0 || h <= 0) return L"";
+    bool portrait = h > w;
+    double r = portrait ? double(h) / w : double(w) / h;
+    // common screen / panel shapes; "21:9" covers the 2560x1080 (2.37), 3440x1440 (2.39) and 3840x1600 (2.4) family
+    struct Named { double ratio; const wchar_t* land; const wchar_t* port; double tol; };
+    static const Named kNamed[] = {
+        {1.0, L"1:1", L"1:1", 0.02},       {5.0 / 4, L"5:4", L"4:5", 0.015},   {4.0 / 3, L"4:3", L"3:4", 0.015},
+        {3.0 / 2, L"3:2", L"2:3", 0.015},   {16.0 / 10, L"16:10", L"10:16", 0.015}, {5.0 / 3, L"5:3", L"3:5", 0.012},
+        {16.0 / 9, L"16:9", L"9:16", 0.02}, {2.0, L"2:1", L"1:2", 0.02},        {2.37, L"21:9", L"9:21", 0.035},
+        {3.0, L"3:1", L"1:3", 0.03},        {32.0 / 9, L"32:9", L"9:32", 0.02},  {4.0, L"4:1", L"1:4", 0.03},
+        {5.0, L"5:1", L"1:5", 0.03},        {6.0, L"6:1", L"1:6", 0.03},
+    };
+    for (auto& n : kNamed)
+        if (std::fabs(r - n.ratio) / n.ratio <= n.tol) return portrait ? n.port : n.land;
+    wchar_t b[32];
+    if (portrait) swprintf(b, 32, L"1:%.2f", r);
+    else swprintf(b, 32, L"%.2f:1", r);
+    return b;
+}
+
 void AutoGrid(int width, int height, int& cols, int& rows) {
     cols = std::clamp(int(std::lround(width / 120.0)), 2, 32);
     rows = std::clamp(int(std::lround(height / 120.0)), 1, 32);

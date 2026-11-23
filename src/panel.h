@@ -58,6 +58,8 @@ bool Export(const std::wstring& path, const Layout& l);
 bool Import(const std::wstring& path, Layout& out, const std::wstring& imageDir, std::wstring& err);
 Layout DefaultLayout();                           // 1920x480 starter layout
 void AutoGrid(int width, int height, int& cols, int& rows);
+// Friendly aspect ratio for a resolution: "16:9", "32:9", "21:9", "16:10", "4:1", "9:16" ... or "2.37:1".
+std::wstring AspectLabel(int width, int height);
 void Regrid(Layout& l, int cols, int rows);       // rescale widgets to a new grid
 void Clamp(Layout& l);
 bool FindFreeSpot(const Layout& l, int w, int h, int& x, int& y);

@@ -27,6 +27,8 @@ RigSense is a single small native app (C++, Win32 + Direct2D), not a web or Elec
 - **Component check.** RigSense detects your GPU driver, RTSS, LibreHardwareMonitor and HWiNFO, links each download page, and can install the latest version for you through `winget`.
 - **Automatic updates.** When a new release is published, RigSense downloads it from this repository's GitHub releases, verifies its SHA-256 checksum, and restarts into the new version. It never restarts while a connector alert is active. You can switch this to *Notify me* or *Off*.
 - **Settings window.** Change the connector protection, per-pin source, monitoring and update options in the app, with Save/Cancel. The version and build (git commit and date) are shown in Settings and in the exe's file properties.
+- **Old tablet or phone as a panel.** Any Android tablet, phone or iPad can show your sensor panel through its own browser, with nothing to install on it. Use **USB** (no network needed, the tablet stays charged and awake) or **Wi-Fi** (scan a QR code). It's local, free and ad-free. See [below](#use-an-old-tablet-or-phone-as-a-panel).
+- **Screen detection.** RigSense knows the resolution and aspect ratio (16:9, 21:9, 32:9, 16:10, 4:1…) of every display and of a connected tablet. **Detect screens** designs the panel for one of them in a click, and a rotated screen shows your design fitted instead of stretched.
 - Performance chart, event log, CSV logging, and a tray icon with notifications.
 
 | Dashboard | Sensor panel designer |
@@ -161,7 +163,37 @@ New issues get an automatic first look: an AI assistant (Claude) checks the repo
 
 ---
 
+## Use an old tablet or phone as a panel
+
+Got an old Android tablet or phone, or an iPad, lying around? It can be your sensor panel. RigSense draws the panel at the device's exact resolution and the device's browser shows it fullscreen. Nothing needs to be installed on the device, and there are no ads or accounts.
+
+![Tablet / phone dialog](docs/screenshots/tablet.png)
+
+Open **Sensor panel → Tablet / phone…** and pick a mode:
+
+| | **USB** (recommended for a tablet mounted on or next to your case) | **Wi-Fi** |
+|---|---|---|
+| How | RigSense connects with Google's free `adb` tool (install it from the dialog or the Components check) and opens the panel on the tablet automatically | Scan the QR code with the tablet, or type the address |
+| Network | None. The tablet reaches RigSense through the cable only | Same home network. The address contains a secret key, so other devices can't view the panel |
+| Screen stays on | Yes, while plugged in (RigSense can keep it awake) | Use the tablet's own screen-timeout or "stay awake" setting |
+| Works with | Android 5 or newer | Android, iPad/iPhone, anything with a browser |
+
+**One-time USB setup on the tablet:** *Settings → About tablet →* tap **Build number** 7 times, then *Settings → Developer options →* turn on **USB debugging**. Plug the tablet in and tap **Allow**, and the panel opens. Tap it once for fullscreen. In Chrome, *Add to Home screen* gives you an app-like icon.
+
+The tablet can only **view** the panel; it can't control your PC. The panel updates twice per second while a device is watching and stops rendering when nobody is (frames are about 50–100 KB). When the device is rotated relative to your design, the design is shown fitted. **Design for this tablet** in the dialog, or **Detect screens** in the editor, makes a layout that fills the device exactly.
+
+Settings (`[Tablet]` in `RigSense.ini`): `Mode` = `off` / `usb` / `wifi` (USB + Wi-Fi), `Port` = 8086, `Key` (the secret; **New secret key** in the dialog replaces it), `StayOn` = 1.
+
+---
+
 ## Changelog
+
+**1.3.0**
+- **Tablet / phone panel:** RigSense serves the panel to any browser, over USB (`adb reverse`, no network) or Wi-Fi (QR code, secret key). It renders at the device's exact resolution, works on old Android and iOS browsers, has a fullscreen home-screen shortcut, and can keep the screen awake over USB. Read-only, and off by default.
+- **Screen detection:** aspect ratio labels (16:9, 21:9, 32:9, 16:10, 4:1…) for the design, displays and Identify. **Detect screens** designs the panel for a connected display or tablet. The Tablet dialog suggests *Design for this tablet* when the shapes differ.
+- A rotated display or tablet now shows the design fitted (letterboxed) instead of stretched.
+- Optional "Android platform-tools (adb)" row in the Components check.
+
 
 **1.2.0**
 - Automatic updates from GitHub releases, SHA-256 verified, with Automatic / Notify me / Off modes. Updates never apply while a connector alert is active.
@@ -182,4 +214,4 @@ New issues get an automatic first look: an AI assistant (Claude) checks the repo
 
 ## License
 
-[MIT](LICENSE). RigSense is not affiliated with ASUS, NVIDIA, AMD, Intel, REALiX (HWiNFO), Guru3D (RTSS) or the LibreHardwareMonitor project. All trademarks belong to their owners.
+[MIT](LICENSE). Includes the [QR Code generator library](https://github.com/nayuki/QR-Code-generator) by Project Nayuki (MIT), in `src/third_party/qrcodegen`. RigSense is not affiliated with ASUS, NVIDIA, AMD, Intel, REALiX (HWiNFO), Guru3D (RTSS) or the LibreHardwareMonitor project. All trademarks belong to their owners.

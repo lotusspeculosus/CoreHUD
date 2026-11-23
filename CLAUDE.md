@@ -23,7 +23,12 @@ contribute to a melted connector or a fire, so safety rules below override every
 - `src/nvapi_gpu.*` (ROG Astral IT8915FN sensor, read-only), `src/nvml_gpu.*`, `src/gpu_generic.*` (AMD/Intel via DXGI/PDH/D3DKMT)
 - `src/sensors.*` – sensor registry (built-in, HWiNFO Gadget registry, LibreHardwareMonitor web server/WMI, RTSS)
 - `src/panel.*` – sensor panel layout model, `panel.txt`, `.rigpanel` export/import
-- `src/components.*` – driver/RTSS/LHM/HWiNFO detection + winget install
+- `src/components.*` – driver/RTSS/LHM/HWiNFO/adb detection + winget install
+- `src/updater.*`, `settings_ui.inc` – GitHub-release auto-update (SHA-256 verified) and the Settings window; `version.h` = version
+- `src/tablet.*`, `tablet_ui.inc` – tablet/phone panel: tiny read-only HTTP server (secret key, GET only), off-screen
+  frame rendering to JPEG, `adb reverse` for USB. `src/third_party/qrcodegen` = Nayuki QR library (MIT, unmodified)
+- Tablet server rules: keep it read-only (no endpoints that change state), keep the key check on every request,
+  USB-only mode must bind to 127.0.0.1 only
 - `tests/` – `test_pins.cpp` (decoders), `test_panel.cpp` (layout, export/import, fuzz)
 
 ## Build & test

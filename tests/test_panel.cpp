@@ -185,6 +185,25 @@ int main() {
         CHECK(!panel::PlaceWidget(full, w));
     }
 
+    // 6. aspect ratio labels
+    CHECK(panel::AspectLabel(1920, 1080) == L"16:9");
+    CHECK(panel::AspectLabel(2560, 1440) == L"16:9");
+    CHECK(panel::AspectLabel(3840, 2160) == L"16:9");
+    CHECK(panel::AspectLabel(5120, 1440) == L"32:9");
+    CHECK(panel::AspectLabel(3840, 1080) == L"32:9");
+    CHECK(panel::AspectLabel(3440, 1440) == L"21:9");
+    CHECK(panel::AspectLabel(2560, 1080) == L"21:9");
+    CHECK(panel::AspectLabel(1920, 1200) == L"16:10");
+    CHECK(panel::AspectLabel(1280, 800) == L"16:10");
+    CHECK(panel::AspectLabel(1920, 480) == L"4:1");
+    CHECK(panel::AspectLabel(800, 480) == L"5:3");
+    CHECK(panel::AspectLabel(1024, 600) == L"1.71:1");
+    CHECK(panel::AspectLabel(480, 320) == L"3:2");
+    CHECK(panel::AspectLabel(1080, 1920) == L"9:16");
+    CHECK(panel::AspectLabel(800, 1280) == L"10:16");
+    CHECK(panel::AspectLabel(2048, 1536) == L"4:3");
+    CHECK(panel::AspectLabel(0, 100).empty());
+
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

@@ -74,6 +74,12 @@ void ToggleVirtualTop() {
 }
 
 void RefreshAdapted();
+// How the design is shown on a W x H surface (case display, tablet):
+//   same shape (within 10%)          -> as designed, scaled
+//   rotated (portrait vs landscape)  -> letterboxed: the design is kept intact and fitted, centred
+//   other shape, same orientation    -> a proportionally regridded copy (see RefreshAdapted / AdaptedFor)
+bool LetterboxRect(float W, float H, D2D1_RECT_F& r);
+void RenderLetterboxed(float W, float H, const D2D1_RECT_F& r);
 
 void SaveLayout() {
     panel::Clamp(g_layout);
@@ -126,8 +132,9 @@ std::wstring MonitorLabel(int i) {
     const auto& m = g_mons[size_t(i)];
     std::wstring s = F(L"Display %d", i + 1);
     if (!m.name.empty()) s += L" \u00b7 " + m.name;
-    s += F(L" \u00b7 %d\u00d7%d", m.rc.right - m.rc.left, m.rc.bottom - m.rc.top);
-    if (m.primary) s += L" (main)";
+    s += F(L" \u00b7 %d\u00d7%d (%s)", m.rc.right - m.rc.left, m.rc.bottom - m.rc.top,
+           panel::AspectLabel(m.rc.right - m.rc.left, m.rc.bottom - m.rc.top).c_str());
+    if (m.primary) s += L" \u00b7 main";
     return s;
 }
 
@@ -620,6 +627,49 @@ void AddWidget(panel::WType t, const std::string& sensor = "") {
 }
 
 void ShowPanel(bool on);
+void OpenTabletDialog();
+bool TabletLastSize(int& w, int& h);   // tablet_ui.inc
+
+// Design the panel for a screen: adopt its resolution, rescale the grid proportionally (explicit user choice).
+void DesignFor(int w, int h) {
+    g_layout.width = w;
+    g_layout.height = h;
+    int c, r;
+    panel::AutoGrid(w, h, c, r);
+    panel::Regrid(g_layout, c, r);
+    SaveLayout();
+}
+
+// "Detect screens" menu: every connected display and the last tablet/phone, with resolution + aspect ratio.
+void ShowDetectMenu() {
+    EnumMonitors();
+    HMENU m = CreatePopupMenu();
+    AppendMenuW(m, MF_STRING | MF_GRAYED, 0, L"Design the panel for\u2026");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    for (size_t i = 0; i < g_mons.size(); ++i) AppendMenuW(m, MF_STRING, UINT(100 + i), MonitorLabel(int(i)).c_str());
+    int tw = 0, th = 0;
+    if (TabletLastSize(tw, th))
+        AppendMenuW(m, MF_STRING, 50, F(L"Tablet / phone \u00b7 %d\u00d7%d (%s)", tw, th, panel::AspectLabel(tw, th).c_str()).c_str());
+    else
+        AppendMenuW(m, MF_STRING | MF_GRAYED, 0, L"Tablet / phone \u00b7 open the panel on it once to detect its size");
+    POINT pt;
+    GetCursorPos(&pt);
+    int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, g_hwnd, nullptr);
+    DestroyMenu(m);
+    if (cmd == 50 && TabletLastSize(tw, th)) DesignFor(tw, th);
+    else if (cmd >= 100 && cmd < 100 + int(g_mons.size())) {
+        const auto& mo = g_mons[size_t(cmd - 100)];
+        DesignFor(mo.rc.right - mo.rc.left, mo.rc.bottom - mo.rc.top);
+        if (!mo.primary) {   // a separate display: also show the panel there
+            g_layout.display = mo.dev;
+            SaveLayout();
+            bool open = g_panelWnd != nullptr;
+            ShowPanel(false);
+            if (open) ShowPanel(true);
+        }
+    }
+    InvalidateRect(g_hwnd, nullptr, FALSE);
+}
 void RefreshAdapted();
 
 void ExportPanel() {
@@ -706,10 +756,14 @@ void DrawPanelEditor(float W, float H) {
         float x = P.left + 14, y = P.top + 10, w = c1 - 28;
         Text(L"Panel", R(x, y, w, 26), Fmt(15, 1), kInk);
         y += 32;
-        static const int presets[][2] = {{1920, 480}, {1280, 480}, {800, 480}, {1024, 600}, {480, 320}, {2560, 720}, {1920, 720}, {1920, 1080}};
+        static const int presets[][2] = {{1920, 480}, {1280, 480}, {800, 480}, {1024, 600}, {480, 320}, {2560, 720}, {1920, 720}};
         float bw = (w - 16) / 3;
         for (int i = 0; i < 9; ++i) {
             D2D1_RECT_F br = R(x + (i % 3) * (bw + 8), y + (i / 3) * rowH, bw, ctl);
+            if (i == 7) {
+                Btn(br, L"Detect screens \u25B8", false, [] { ShowDetectMenu(); });
+                continue;
+            }
             if (i == 8) {
                 Btn(br, L"↻ Rotate", false, [] {
                     std::swap(g_layout.width, g_layout.height);
@@ -744,7 +798,7 @@ void DrawPanelEditor(float W, float H) {
             double v = ParseField(tmp);
             if (!std::isnan(v)) { g_layout.height = int(v); SaveLayout(); }
         }
-        Text(L"px", R(cx + 166, y, 30, ctl), Fmt(12), kMuted);
+        Text(L"px \u00b7 " + panel::AspectLabel(g_layout.width, g_layout.height), R(cx + 166, y, w - 166 - 92, ctl), Fmt(12), kMuted);
         y += rowH;
         cx = label(L"Grid cols/rows");
         Stepper(cx, y, ctl, std::to_wstring(g_layout.cols), [] { panel::Regrid(g_layout, g_layout.cols - 1, g_layout.rows); SaveLayout(); },
@@ -816,8 +870,7 @@ void DrawPanelEditor(float W, float H) {
             g_sel = -1;
             SaveLayout();
         });
-        Btn(R(x + (w - 8) / 2 + 8, y, (w - 8) / 2, ctl), L"Open panel.txt", false,
-            [] { ShellExecuteW(g_hwnd, L"open", L"notepad.exe", (L"\"" + g_layoutPath + L"\"").c_str(), nullptr, SW_SHOWNORMAL); });
+        Btn(R(x + (w - 8) / 2 + 8, y, (w - 8) / 2, ctl), L"Tablet / phone\u2026", false, [] { OpenTabletDialog(); });
         y += rowH;
         Btn(R(x, y, (w - 8) / 2, ctl), L"Export panel…", false, [] { ExportPanel(); });
         Btn(R(x + (w - 8) / 2 + 8, y, (w - 8) / 2, ctl), L"Import panel…", false, [] { ImportPanel(); });
@@ -1154,9 +1207,14 @@ void PaintPanelWindow() {
         g_prt->PopAxisAlignedClip();
     } else {
         g_prt->Clear(Col(g_layout.bgColor));
-        if (g_hasAdapted) std::swap(g_layout, g_adapted);   // render-only, swapped straight back
-        RenderPanel(sz.width, sz.height, false);
-        if (g_hasAdapted) std::swap(g_layout, g_adapted);
+        D2D1_RECT_F lb;
+        if (!g_hasAdapted && LetterboxRect(sz.width, sz.height, lb)) {
+            RenderLetterboxed(sz.width, sz.height, lb);
+        } else {
+            if (g_hasAdapted) std::swap(g_layout, g_adapted);   // render-only, swapped straight back
+            RenderPanel(sz.width, sz.height, false);
+            if (g_hasAdapted) std::swap(g_layout, g_adapted);
+        }
     }
     HRESULT hr = g_prt->EndDraw();
     g_rt = saveRt;
@@ -1297,6 +1355,26 @@ void ShowPanel(bool on) {
 // Same shape as the design (e.g. a 1920x480 bar for a 1920x480 design): rendered as designed, just scaled.
 // Clearly different shape: render a proportionally regridded copy so widgets keep their arrangement with
 // roughly square cells instead of being stretched. The design itself stays untouched.
+bool LetterboxRect(float W, float H, D2D1_RECT_F& r) {
+    double design = double(g_layout.width) / g_layout.height, aspect = double(W) / H;
+    if ((aspect > 1.0) == (design > 1.0) || std::fabs(aspect - design) / design <= 0.10) return false;
+    float s = std::min(W / g_layout.width, H / g_layout.height);
+    float rw = g_layout.width * s, rh = g_layout.height * s;
+    r = D2D1::RectF((W - rw) / 2, (H - rh) / 2, (W + rw) / 2, (H + rh) / 2);
+    return true;
+}
+
+void RenderLetterboxed(float W, float H, const D2D1_RECT_F& r) {
+    Fill(D2D1::RectF(0, 0, W, H), g_layout.bgColor);
+    D2D1_MATRIX_3X2_F old;
+    g_rt->GetTransform(&old);
+    g_rt->SetTransform(D2D1::Matrix3x2F::Translation(r.left, r.top) * old);
+    g_rt->PushAxisAlignedClip(D2D1::RectF(0, 0, r.right - r.left, r.bottom - r.top), D2D1_ANTIALIAS_MODE_ALIASED);
+    RenderPanel(r.right - r.left, r.bottom - r.top, false);
+    g_rt->PopAxisAlignedClip();
+    g_rt->SetTransform(old);
+}
+
 void RefreshAdapted() {
     g_hasAdapted = false;
     if (!g_panelWnd || g_panelVirtual) return;
@@ -1304,6 +1382,8 @@ void RefreshAdapted() {
     GetClientRect(g_panelWnd, &rc);
     int w = rc.right - rc.left, h = rc.bottom - rc.top;
     if (w <= 0 || h <= 0) return;
+    D2D1_RECT_F lb;
+    if (LetterboxRect(float(w), float(h), lb)) return;   // rotated display: letterboxed at paint time
     double designAspect = double(g_layout.width) / g_layout.height, aspect = double(w) / h;
     if (std::fabs(aspect - designAspect) / designAspect <= 0.10) return;
     g_adapted = g_layout;
