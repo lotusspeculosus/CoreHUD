@@ -143,7 +143,7 @@ ROG Astral cards have an ITE IT8915FN chip on the GPU's own I²C bus. RigSense r
 
 Open an [issue](../../issues/new/choose) and pick a form: **Bug report**, **Per-pin meter test report** (WireView Pro II / PMD2X / MSI PSU owners, please!) or **Feature request**. Report security problems privately via [Report a vulnerability](../../security/advisories/new).
 
-Every pull request is compiled and tested automatically on Windows ("Build & test" workflow), and its build can be downloaded from the run's artifacts.
+New issues get an automatic first look: an AI assistant (Claude) checks the report against the code, labels it, and replies with what it found or which details are missing. For confirmed bugs it may propose a fix as a pull request. Nothing is merged without the maintainer's review. Every pull request is compiled and tested automatically on Windows ("Build & test" workflow), and its build can be downloaded from the run's artifacts, so you can try a fix before it's released.
 
 ---
 
