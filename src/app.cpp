@@ -26,6 +26,8 @@
 #include "sensors.h"
 #include "components.h"
 
+#define RIGSENSE_VERSION L"1.1.0"
+
 namespace {
 
 constexpr UINT WM_APP_SAMPLE = WM_APP + 1;
@@ -243,7 +245,9 @@ void DrawPinPanel(const D2D1_RECT_F& P) {
     float y = P.top + 14;
     Fill(R(x0, y + 4, 26, 26), kAccent, 6, 0.9f);
     Text(L"", R(x0, y + 4, 26, 26), Fmt(13, 0, 1, true), kBg);
-    Text(L"Pin distribution", R(x0 + 36, y, 300, 34), Fmt(16, 1), kInk);
+    Text(L"Pin distribution", R(x0 + 36, y, 160, 34), Fmt(16, 1), kInk);
+    if (s.sensorEnabled && !s.pinSource.empty())
+        Text(L"\u00b7  " + s.pinSource, R(x0 + 190, y, x1 - x0 - 190 - 130, 34), Fmt(12), kMuted);
     const wchar_t* modes[] = {L"A", L"W", L"V"};
     for (int i = 0; i < 3; ++i) Button(R(x1 - (3 - i) * 40 + 4, y + 2, 36, 30), modes[i], HIT_MODE + i, g_mode == i, 14);
     y += 46;
@@ -278,8 +282,16 @@ void DrawPinPanel(const D2D1_RECT_F& P) {
     // footer line
     float footerH = 22;
     float chartBottom = P.bottom - 14 - footerH;
-    std::wstring footer = F(L"IT8915FN @ 0x%02X · I2C port %d · read %.0f ms · %llu samples · %llu errors · limit %.1f A, warn %.1f A",
-                            c.i2cAddr, c.i2cPort, s.readMs, (unsigned long long)s.samples, (unsigned long long)s.failures, c.limitA, c.warnA);
+    std::wstring footer = s.pinSourceId == "astral"
+        ? F(L"IT8915FN @ 0x%02X \u00b7 I2C port %d \u00b7 read %.0f ms \u00b7 %llu samples \u00b7 %llu errors \u00b7 limit %.1f A, warn %.1f A",
+            c.i2cAddr, c.i2cPort, s.readMs, (unsigned long long)s.samples, (unsigned long long)s.failures, c.limitA, c.warnA)
+        : F(L"%s \u00b7 read %.0f ms \u00b7 %llu errors \u00b7 limit %.1f A, warn %.1f A%s", s.pinSource.c_str(), s.readMs,
+            (unsigned long long)s.failures, c.limitA, c.warnA, s.perPinVolts ? L"" : L" \u00b7 voltage = PSU 12V rail");
+    if (s.pinsOk && s.pinCount > 6) {
+        double c2 = 0;
+        for (int i = 6; i < 12; ++i) c2 = std::max(c2, s.amps[i]);
+        footer += F(L" \u00b7 connector 2 highest pin %.2f A", c2);
+    }
     if (s.sensorEnabled) Text(footer, R(x0, P.bottom - 14 - footerH, x1 - x0, footerH), Fmt(11, 0, 1), kMuted);
 
     if (!s.sensorEnabled || (!ok && s.samples > 0)) {
@@ -287,16 +299,20 @@ void DrawPinPanel(const D2D1_RECT_F& P) {
         Fill(m, kSurface2, 8);
         std::wstring t1, t2;
         bool info = !s.sensorEnabled;   // not an error: this GPU simply has no per-pin sensor
-        if (!s.haveGpu) {
-            t1 = L"No per-pin connector sensor on this PC";
-            t2 = L"Per-pin 12V-2x6 monitoring needs a card with a pin sensor (ASUS ROG Astral). Everything else in RigSense works.";
-        } else if (!s.sensorEnabled) {
-            t1 = F(L"This card (subsystem %04X:%04X) has no known per-pin sensor", s.subSystemId & 0xFFFF, s.subSystemId >> 16);
-            t2 = L"If it is an ASUS ROG Astral that isn't recognised yet, set Force=1 in Settings to try reading the sensor (read-only).";
-        } else {
+        if (!s.sensorEnabled) {
+            t1 = s.haveGpu ? F(L"No per-pin sensor on this card (subsystem %04X:%04X) and no external meter found", s.subSystemId & 0xFFFF, s.subSystemId >> 16)
+                           : std::wstring(L"No per-pin sensor or external meter found");
+            t2 = L"Per-pin monitoring works with any GPU through a Thermal Grizzly WireView Pro II, ElmorLabs PMD2X or MSI MPG Ai1300TS/Ai1600TS PSU (USB connected).";
+        } else if (s.pinSourceId == "astral") {
             t1 = L"Per-pin sensor read failed";
-            t2 = Wide(s.pinError) + L"  —  close other tools polling the GPU I2C bus (Armoury Crate, GPU Tweak) or check I2CPort/I2CAddr.";
+            t2 = Wide(s.pinError) + L"  \u2014  close other tools polling the GPU I2C bus (Armoury Crate, GPU Tweak) or check I2CPort/I2CAddr.";
+        } else {
+            t1 = L"Per-pin meter not responding";
+            t2 = Wide(s.pinError) + L"  \u2014  check the USB cable, and close the vendor app (WireView / MSI Center) if it holds the device.";
         }
+        if (!s.sensorEnabled)
+            Text(L"Cards with an on-card sensor: ASUS ROG Astral (if yours isn't recognised, try Force=1 in Settings).",
+                 R(m.left + 10, m.top + (m.bottom - m.top) / 2 + 34, m.right - m.left - 20, 20), Fmt(11.5f, 0, 1), kMuted);
         Text(L"", R(m.left, m.top + (m.bottom - m.top) / 2 - 50, m.right - m.left, 30), Fmt(22, 0, 1, true), info ? kMuted : kWarn);
         Text(t1, R(m.left, m.top + (m.bottom - m.top) / 2 - 14, m.right - m.left, 24), Fmt(15, 1, 1), kInk);
         Text(t2, R(m.left + 10, m.top + (m.bottom - m.top) / 2 + 12, m.right - m.left - 20, 22), Fmt(12, 0, 1), kInk2);
@@ -329,7 +345,7 @@ void DrawPinPanel(const D2D1_RECT_F& P) {
     float slot = (px1 - px0) / 6;
     float barW = std::min(56.f, slot * 0.42f);
     double avgV = 0;
-    for (double v : s.volts) avgV += v / 6;
+    for (int i = 0; i < 6; ++i) avgV += s.volts[i] / 6;
 
     for (int i = 0; i < 6; ++i) {
         float cx = px0 + slot * (i + 0.5f);
@@ -380,7 +396,7 @@ void DrawPinPanel(const D2D1_RECT_F& P) {
         if (!In(R(cx - slot / 2, plotTop, slot, plotBot - plotTop), g_mx, g_my)) continue;
         std::wstring lines[4] = {F(L"Pin %d", i + 1), F(L"%.3f A  ·  %.3f V", s.amps[i], s.volts[i]),
                                  F(L"%.1f W  ·  %.1f%% of connector", s.amps[i] * s.volts[i],
-                                   [&] { double t = 0; for (double a : s.amps) t += a; return t > 0 ? s.amps[i] / t * 100 : 0; }()),
+                                   [&] { double t = 0; for (int k = 0; k < 6; ++k) t += s.amps[k]; return t > 0 ? s.amps[i] / t * 100 : 0; }()),
                                  F(L"Session peak %.2f A", s.peakA[i])};
         float tw = 210, th = 86;
         float tx = std::min(g_mx + 14, P.right - tw - 8), ty = std::max(g_my - th - 8, P.top + 8);
@@ -432,7 +448,10 @@ void DrawGpuPanel(const D2D1_RECT_F& P) {
     Text(L"GPU status", R(x + 36, y, 200, 34), Fmt(16, 1), kInk);
     y += 36;
     std::wstring sub = g_reg.gpuName.empty() ? L"No GPU found" : g_reg.gpuName;
-    if (g_reg.gpuViaWindows && !g_reg.gpuName.empty()) sub += L"  ·  Windows GPU counters";
+    if (g_reg.gpuViaWindows && !g_reg.gpuName.empty())
+        sub += g_reg.gpuFromLhm ? L"  \u00b7  Windows counters + LibreHardwareMonitor"
+               : g_reg.lhmProcess ? L"  \u00b7  Windows counters (LibreHardwareMonitor: enable Options \u203A Remote Web Server \u203A Run)"
+                                  : L"  \u00b7  Windows GPU counters (more detail: run LibreHardwareMonitor)";
     Text(sub, R(x, y, w, 18), Fmt(12), kInk2);
     y += 26;
 
@@ -489,9 +508,12 @@ void DrawGpuPanel(const D2D1_RECT_F& P) {
     }
 
     c = StatusRow(x, y, w, h, L"Board power", L"");
-    if (g_reg.Find("gpu.board_w")) {
+    if (S("gpu.board_w") || !g_reg.gpuViaWindows) {
         const sensors::Sensor* bp = S("gpu.board_w");
-        Columns(c, {{L"Driver reported", V("gpu.board_w", L"%.0f W")}, {L"Power limit", bp ? F(L"%.0f W", bp->rangeMax) : na}});
+        if (g_reg.gpuViaWindows)   // LibreHardwareMonitor value: no power limit known
+            Columns(c, {{L"Board power", V("gpu.board_w", L"%.0f W")}, {L"Power (of limit)", V("gpu.power_pct", L"%.1f %%")}});
+        else
+            Columns(c, {{L"Driver reported", V("gpu.board_w", L"%.0f W")}, {L"Power limit", bp ? F(L"%.0f W", bp->rangeMax) : na}});
     } else {
         Columns(c, {{L"Power (of limit)", V("gpu.power_pct", L"%.1f %%")}});
     }
@@ -521,7 +543,7 @@ void DrawDashboard(float W, float H) {
     std::wstring na = L"—";
     float kw = (W - 2 * pad - 2 * 12) / 3, kh = 110;
     DrawKpi(R(pad, y, kw, kh), L"CONNECTOR POWER", ok ? F(L"%.1f", connW) : na, L"W",
-            !s.sensorEnabled ? std::wstring(L"No per-pin connector sensor on this GPU")
+            !s.sensorEnabled ? std::wstring(L"No per-pin sensor or meter found (see Pin distribution)")
             : s.stats.powerW >= 0 ? F(L"Board total (driver): %.0f W  ·  rest via PCIe slot", s.stats.powerW) : L"", L"");
     DrawKpi(R(pad + kw + 12, y, kw, kh), L"TOTAL CURRENT", ok ? F(L"%.2f", totA) : na, L"A",
             ok ? F(L"Average %.2f A per pin", totA / 6) : L"", L"");

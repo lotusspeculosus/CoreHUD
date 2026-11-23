@@ -42,6 +42,7 @@ void DrawSetupOverlay(float W, float H) {
     Fill(card, kSurface, 12);
     Stroke(card, kBorder, 12);
     Text(L"Components", R(x0 + 24, y0 + 16, cw - 48, 30), Fmt(19, 1), kInk);
+    Text(L"RigSense " RIGSENSE_VERSION, R(x0 + 24, y0 + 16, cw - 48, 30), Fmt(12, 0, 2), kMuted);
     Text(L"RigSense works on its own; these add data. Install what you want — “Install latest” uses winget (built into Windows).",
          R(x0 + 24, y0 + 46, cw - 48, 20), Fmt(12.5f), kInk2);
     float y = y0 + 80;

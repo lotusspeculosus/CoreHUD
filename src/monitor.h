@@ -6,6 +6,7 @@
 #include <vector>
 #include "nvapi_gpu.h"
 #include "nvml_gpu.h"
+#include "pinsources.h"
 
 namespace mon {
 
@@ -18,6 +19,8 @@ struct Config {
     int i2cAddr = 0x2B;        // 7-bit address of the IT8915FN
     int gpuIndex = -1;         // -1 = auto (first known Astral, else first GPU)
     bool force = false;        // also read on cards not in the known-subsystem list
+    std::string pinSource = "auto";   // auto | astral | wireview | pmd2x | msipsu | off
+    int lhmPort = 8085;               // LibreHardwareMonitor web server port (Options > Remote Web Server)
     bool beep = true;          // beep on critical
     bool csv = false;          // start with CSV logging on
     int criticalAction = 0;    // 0 = notify only, 1 = start a 60 s Windows shutdown countdown
@@ -53,14 +56,19 @@ struct Snapshot {
     uint32_t deviceId = 0, subSystemId = 0, busId = 0;
     std::string model;
     bool knownCard = false;
-    bool sensorEnabled = false;
+    bool sensorEnabled = false;  // a per-pin source exists (on-card sensor or external meter)
     bool pinsOk = false;
     std::string pinError;
-    double volts[6] = {}, amps[6] = {};
-    double peakA[6] = {};
+    std::wstring pinSource;      // "ROG Astral on-card sensor", "Thermal Grizzly WireView Pro II (COM5)", ...
+    std::string pinSourceId;     // astral | wireview | pmd2x | msipsu
+    int pinCount = 6;            // 12 when an MSI PSU reports two loaded connectors (pins 7-12 = connector 2)
+    bool perPinVolts = true;
+    double volts[pins::kMaxPins] = {}, amps[pins::kMaxPins] = {};
+    double peakA[pins::kMaxPins] = {};
     double peakConnW = 0;
     double minVolts = 0;
-    int pinState[6] = {};      // 0 ok, 1 warn, 2 critical
+    int pinState[pins::kMaxPins] = {};   // 0 ok, 1 warn, 2 critical
+    std::vector<pins::Extra> pinExtras;  // extra values from external meters (temps, PSU rail, ...)
     bool nvmlOk = false;
     nvml::Stats stats;
     double coreV = -1, hotspotC = -1, vramC = -1;

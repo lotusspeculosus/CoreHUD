@@ -5,12 +5,15 @@
 #include <windows.h>
 #include <tlhelp32.h>
 #include <wbemidl.h>
+#include <winhttp.h>
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 
 namespace sensors {
 namespace {
+using uchar = unsigned char;
 
 // ---- HWiNFO shared memory (documented in the HWiNFO SDK) ----
 constexpr uint32_t HWI_SIG_ACTIVE = 0x53695748;   // 'HWiS'
@@ -145,6 +148,7 @@ void Registry::Shutdown() {
     if (wmiServices_) static_cast<IWbemServices*>(wmiServices_)->Release();
     if (wmiLocator_) static_cast<IWbemLocator*>(wmiLocator_)->Release();
     wmiServices_ = wmiLocator_ = nullptr;
+    if (http_) { WinHttpCloseHandle(http_); http_ = nullptr; }
 }
 
 // ---- HWiNFO "Gadget" values: HKCU\Software\HWiNFO64\VSB (Sensor<i>, Label<i>, Value<i>, ValueRaw<i>) ----
@@ -207,18 +211,137 @@ void Registry::AddHwinfoGadget() {
     RegCloseKey(k);
 }
 
-// ---- LibreHardwareMonitor WMI: ROOT\LibreHardwareMonitor (Sensor / Hardware classes) ----
-void Registry::AddLhm() {
-    lhmOk = false;
-    lhmCount = 0;
+// ---- LibreHardwareMonitor ----
+// v0.9.5+ removed WMI (.NET 10): data comes from its local web server (Options > Remote Web Server > Run,
+// http://127.0.0.1:8085/data.json). Older versions publish ROOT\LibreHardwareMonitor via WMI.
+namespace {
+
+// Minimal JSON reader for data.json (objects, arrays, strings, numbers, true/false/null).
+struct JVal {
+    enum Type { Null, Bool, Num, Str, Arr, Obj } t = Null;
+    double num = 0;
+    std::string str;
+    std::vector<JVal> arr;
+    std::vector<std::pair<std::string, JVal>> obj;
+    const JVal* get(const char* k) const {
+        for (auto& p : obj) if (p.first == k) return &p.second;
+        return nullptr;
+    }
+};
+
+struct JParser {
+    const char* p;
+    const char* e;
+    int depth = 0;
+    void ws() { while (p < e && (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t')) ++p; }
+    bool lit(const char* s) { size_t n = strlen(s); if (size_t(e - p) >= n && !memcmp(p, s, n)) { p += n; return true; } return false; }
+    bool str(std::string& out) {
+        if (p >= e || *p != '"') return false;
+        ++p;
+        while (p < e && *p != '"') {
+            if (*p == '\\' && p + 1 < e) {
+                ++p;
+                char c = *p++;
+                if (c == 'n') out += '\n'; else if (c == 't') out += '\t'; else if (c == 'r') out += '\r';
+                else if (c == 'b' || c == 'f') {}
+                else if (c == 'u' && e - p >= 4) {
+                    unsigned cp = 0;
+                    for (int i = 0; i < 4; ++i) { char h = *p++; cp = cp * 16 + unsigned(isdigit(h) ? h - '0' : (tolower(h) - 'a' + 10)); }
+                    if (cp < 0x80) out += char(cp);
+                    else if (cp < 0x800) { out += char(0xC0 | (cp >> 6)); out += char(0x80 | (cp & 0x3F)); }
+                    else { out += char(0xE0 | (cp >> 12)); out += char(0x80 | ((cp >> 6) & 0x3F)); out += char(0x80 | (cp & 0x3F)); }
+                } else out += c;
+            } else out += *p++;
+        }
+        if (p >= e) return false;
+        ++p;
+        return true;
+    }
+    bool val(JVal& v) {
+        if (++depth > 64) return false;
+        ws();
+        bool ok = false;
+        if (p >= e) ok = false;
+        else if (*p == '{') {
+            v.t = JVal::Obj; ++p; ws();
+            if (p < e && *p == '}') { ++p; ok = true; }
+            else for (;;) {
+                ws();
+                std::string k;
+                if (!str(k)) break;
+                ws();
+                if (p >= e || *p != ':') break;
+                ++p;
+                v.obj.emplace_back(std::move(k), JVal{});
+                if (!val(v.obj.back().second)) break;
+                ws();
+                if (p < e && *p == ',') { ++p; continue; }
+                if (p < e && *p == '}') { ++p; ok = true; }
+                break;
+            }
+        } else if (*p == '[') {
+            v.t = JVal::Arr; ++p; ws();
+            if (p < e && *p == ']') { ++p; ok = true; }
+            else for (;;) {
+                v.arr.emplace_back();
+                if (!val(v.arr.back())) break;
+                ws();
+                if (p < e && *p == ',') { ++p; continue; }
+                if (p < e && *p == ']') { ++p; ok = true; }
+                break;
+            }
+        } else if (*p == '"') { v.t = JVal::Str; ok = str(v.str); }
+        else if (lit("true")) { v.t = JVal::Bool; v.num = 1; ok = true; }
+        else if (lit("false")) { v.t = JVal::Bool; ok = true; }
+        else if (lit("null")) { ok = true; }
+        else {
+            char* end = nullptr;
+            std::string tmp(p, size_t(std::min<ptrdiff_t>(e - p, 64)));
+            v.num = strtod(tmp.c_str(), &end);
+            if (end != tmp.c_str()) { v.t = JVal::Num; p += end - tmp.c_str(); ok = true; }
+        }
+        --depth;
+        return ok;
+    }
+};
+
+// "45,3 °C" / "1,234.5 MHz" / "12.0" -> number (handles ',' or '.' decimal separators)
+bool LeadingNumber(const std::string& s, double& out) {
+    size_t i = 0;
+    while (i < s.size() && s[i] == ' ') ++i;
+    size_t st = i;
+    while (i < s.size() && (isdigit(uchar(s[i])) || s[i] == '.' || s[i] == ',' || s[i] == '-')) ++i;
+    std::string n = s.substr(st, i - st);
+    if (n.empty()) return false;
+    size_t lastDot = n.rfind('.'), lastComma = n.rfind(',');
+    char dec = 0;
+    if (lastDot != std::string::npos && lastComma != std::string::npos) dec = lastDot > lastComma ? '.' : ',';
+    else if (lastDot != std::string::npos) dec = n.find('.') == lastDot ? '.' : 0;
+    else if (lastComma != std::string::npos) dec = (n.find(',') == lastComma && n.size() - lastComma - 1 != 3) ? ',' : 0;
+    std::string c;
+    for (char ch : n) {
+        if (ch == '.' || ch == ',') { if (ch == dec) c += '.'; }
+        else c += ch;
+    }
+    char* end = nullptr;
+    out = strtod(c.c_str(), &end);
+    return end != c.c_str();
+}
+
+std::wstring FromU8(const std::string& s) { return FromCp(s.c_str(), s.size(), CP_UTF8); }
+
+} // namespace
+
+
+bool Registry::LhmViaWmi(std::vector<LhmItem>& out) {
     DWORD now = GetTickCount();
     if (!wmiServices_) {
-        if (lhmRetryTick_ && now - lhmRetryTick_ < 5000) return;
+        if (lhmRetryTick_ && now - lhmRetryTick_ < 10000) return false;
         lhmRetryTick_ = now;
         if (!wmiLocator_) {
             IWbemLocator* loc = nullptr;
             if (FAILED(CoCreateInstance(CLSID_WbemLocator, nullptr, CLSCTX_INPROC_SERVER, IID_IWbemLocator, reinterpret_cast<void**>(&loc))))
-                return;
+                return false;
             wmiLocator_ = loc;
         }
         auto loc = static_cast<IWbemLocator*>(wmiLocator_);
@@ -230,7 +353,7 @@ void Registry::AddLhm() {
             if (SUCCEEDED(hr)) break;
             svc = nullptr;
         }
-        if (!svc) return;
+        if (!svc) return false;
         CoSetProxyBlanket(svc, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, nullptr, RPC_C_AUTHN_LEVEL_CALL,
                           RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_NONE);
         wmiServices_ = svc;
@@ -266,40 +389,152 @@ void Registry::AddLhm() {
         query(L"SELECT Identifier, Name FROM Hardware", [&](IWbemClassObject* o) { lhmHardware_[str(o, L"Identifier")] = str(o, L"Name"); });
         lhmHardwareTick_ = now;
     }
-    struct TypeInfo { const wchar_t* type; const wchar_t* unit; int dec; int kind; double range; double scale; };
-    static const TypeInfo kTypes[] = {
-        {L"Voltage", L"V", 3, K_VOLT, 0, 1}, {L"Current", L"A", 2, K_CURRENT, 0, 1}, {L"Power", L"W", 1, K_POWER, 0, 1},
-        {L"Clock", L"MHz", 0, K_CLOCK, 0, 1}, {L"Temperature", L"°C", 1, K_TEMP, 100, 1}, {L"Load", L"%", 0, K_USAGE, 100, 1},
-        {L"Frequency", L"Hz", 0, K_OTHER, 0, 1}, {L"Fan", L"RPM", 0, K_FAN, 0, 1}, {L"Flow", L"L/h", 0, K_OTHER, 0, 1},
-        {L"Control", L"%", 0, K_USAGE, 100, 1}, {L"Level", L"%", 0, K_USAGE, 100, 1}, {L"Factor", L"", 2, K_OTHER, 0, 1},
-        {L"Data", L"GB", 1, K_OTHER, 0, 1}, {L"SmallData", L"MB", 0, K_OTHER, 0, 1},
-        {L"Throughput", L"MB/s", 1, K_OTHER, 0, 1.0 / 1048576.0}, {L"TimeSpan", L"s", 0, K_OTHER, 0, 1},
-        {L"Energy", L"mWh", 0, K_OTHER, 0, 1}, {L"Noise", L"dBA", 0, K_OTHER, 0, 1}, {L"Humidity", L"%", 0, K_OTHER, 100, 1},
-    };
     bool ok = query(L"SELECT Identifier, Name, SensorType, Value, Parent FROM Sensor", [&](IWbemClassObject* o) {
-        std::wstring id = str(o, L"Identifier"), name = str(o, L"Name"), type = str(o, L"SensorType"), parent = str(o, L"Parent");
+        LhmItem it;
+        it.id = str(o, L"Identifier");
+        it.name = str(o, L"Name");
+        it.type = str(o, L"SensorType");
+        it.hwId = str(o, L"Parent");
+        auto hw = lhmHardware_.find(it.hwId);
+        it.hwName = hw != lhmHardware_.end() ? hw->second : it.hwId;
         VARIANT v;
         VariantInit(&v);
-        double val = 0;
-        bool have = false;
+        it.value = 0;
+        it.have = false;
         if (SUCCEEDED(o->Get(L"Value", 0, &v, nullptr, nullptr))) {
-            if (v.vt == VT_R4) { val = v.fltVal; have = true; }
-            else if (v.vt == VT_R8) { val = v.dblVal; have = true; }
+            if (v.vt == VT_R4) { it.value = v.fltVal; it.have = true; }
+            else if (v.vt == VT_R8) { it.value = v.dblVal; it.have = true; }
         }
         VariantClear(&v);
-        const TypeInfo* ti = nullptr;
-        for (auto& t : kTypes) if (type == t.type) ti = &t;
-        auto hw = lhmHardware_.find(parent);
-        std::wstring group = L"LHM · " + (hw != lhmHardware_.end() ? hw->second : parent);
-        Add("lhm." + EscKey(ToU8(id)), group, name, ti ? ti->unit : L"", ti ? val * ti->scale : val, have && !std::isnan(val),
-            ti ? ti->range : 0, ti ? ti->dec : 1, ti ? ti->kind : K_OTHER);
-        ++lhmCount;
+        if (it.type == L"Throughput") it.value /= 1048576.0;   // B/s -> MB/s
+        out.push_back(std::move(it));
     });
-    if (!ok) {   // LHM closed: drop the connection and retry later
+    if (!ok || out.empty()) {   // LHM closed (or 0.9.5+ with an empty provider): drop the connection
         svc->Release();
         wmiServices_ = nullptr;
         lhmRetryTick_ = now;
-        return;
+        return false;
+    }
+    lhmVia = L"WMI";
+    return true;
+}
+
+bool Registry::LhmViaHttp(std::vector<LhmItem>& out, int port) {
+    DWORD now = GetTickCount();
+    if (lhmHttpFailTick_ && now - lhmHttpFailTick_ < 5000) return false;   // not running: don't knock every sample
+    if (!http_) http_ = WinHttpOpen(L"RigSense", WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!http_) return false;
+    WinHttpSetTimeouts(http_, 300, 300, 500, 1500);
+    std::string body;
+    bool ok = false;
+    HINTERNET c = WinHttpConnect(http_, L"127.0.0.1", INTERNET_PORT(port), 0);
+    HINTERNET r = c ? WinHttpOpenRequest(c, L"GET", L"/data.json", nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, 0) : nullptr;
+    if (r && WinHttpSendRequest(r, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) && WinHttpReceiveResponse(r, nullptr)) {
+        DWORD status = 0, sz = sizeof status;
+        WinHttpQueryHeaders(r, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status, &sz, WINHTTP_NO_HEADER_INDEX);
+        if (status == 200) {
+            DWORD avail = 0;
+            while (WinHttpQueryDataAvailable(r, &avail) && avail) {
+                size_t off = body.size();
+                body.resize(off + avail);
+                DWORD got = 0;
+                if (!WinHttpReadData(r, &body[off], avail, &got)) { body.resize(off); break; }
+                body.resize(off + got);
+                if (body.size() > 16 * 1024 * 1024) break;
+            }
+            ok = !body.empty();
+        }
+    }
+    if (r) WinHttpCloseHandle(r);
+    if (c) WinHttpCloseHandle(c);
+    if (!ok) { lhmHttpFailTick_ = now; return false; }
+
+    JVal root;
+    JParser jp{body.data(), body.data() + body.size()};
+    if (!jp.val(root)) { lhmHttpFailTick_ = now; return false; }
+    // Walk the tree: hardware > sensor-type group > sensor (sensor nodes carry "SensorId").
+    std::vector<std::string> path;
+    std::function<void(const JVal&)> walk = [&](const JVal& n) {
+        if (n.t != JVal::Obj) return;
+        const JVal* text = n.get("Text");
+        const JVal* sid = n.get("SensorId");
+        if (sid && sid->t == JVal::Str) {
+            LhmItem it;
+            it.id = FromU8(sid->str);
+            it.name = text && text->t == JVal::Str ? FromU8(text->str) : it.id;
+            const JVal* type = n.get("Type");
+            it.type = type && type->t == JVal::Str ? FromU8(type->str) : L"";
+            size_t a = sid->str.rfind('/');
+            size_t b = a == std::string::npos || a == 0 ? std::string::npos : sid->str.rfind('/', a - 1);
+            it.hwId = FromU8(b == std::string::npos ? sid->str : sid->str.substr(0, b));
+            it.hwName = path.size() >= 2 ? FromU8(path[path.size() - 2]) : it.hwId;
+            it.value = 0;
+            it.have = false;
+            const JVal* raw = n.get("RawValue");
+            const JVal* val = n.get("Value");
+            if (raw && raw->t == JVal::Num) { it.value = raw->num; it.have = true; }
+            else if (raw && raw->t == JVal::Str) it.have = LeadingNumber(raw->str, it.value);
+            if (!it.have && val && val->t == JVal::Str) {
+                it.have = LeadingNumber(val->str, it.value);
+                if (it.have && it.type == L"Throughput") {   // "12.3 KB/s" -> MB/s
+                    if (val->str.find("KB/s") != std::string::npos) it.value /= 1024.0;
+                    else if (val->str.find("GB/s") != std::string::npos) it.value *= 1024.0;
+                    else if (val->str.find("MB/s") == std::string::npos) it.value /= 1048576.0;
+                }
+            } else if (it.have && it.type == L"Throughput") it.value /= 1048576.0;   // raw B/s
+            out.push_back(std::move(it));
+            return;
+        }
+        path.push_back(text && text->t == JVal::Str ? text->str : "");
+        if (const JVal* ch = n.get("Children"))
+            if (ch->t == JVal::Arr)
+                for (auto& c2 : ch->arr) walk(c2);
+        path.pop_back();
+    };
+    walk(root);
+    if (out.empty()) { lhmHttpFailTick_ = now; return false; }
+    lhmHttpFailTick_ = 0;
+    lhmVia = L"web server";
+    return true;
+}
+
+void Registry::AddLhm(int port) {
+    lhmOk = false;
+    lhmCount = 0;
+    lhmGpu_.clear();
+    DWORD now = GetTickCount();
+    static DWORD procTick = 0;
+    if (!procTick || now - procTick > 3000) {
+        const wchar_t* names[] = {L"LibreHardwareMonitor.exe"};
+        lhmProcess = ProcessRunning(names, 1);
+        procTick = now;
+    }
+    if (!lhmProcess) { lhmCache_.clear(); return; }
+    if (!lhmCacheTick_ || now - lhmCacheTick_ >= 1000) {   // data.json can be large: refresh once per second
+        std::vector<LhmItem> items;
+        if (!LhmViaWmi(items)) { items.clear(); LhmViaHttp(items, port); }
+        lhmCache_ = std::move(items);
+        lhmCacheTick_ = now;
+    }
+    struct TypeInfo { const wchar_t* type; const wchar_t* unit; int dec; int kind; double range; };
+    static const TypeInfo kTypes[] = {
+        {L"Voltage", L"V", 3, K_VOLT, 0}, {L"Current", L"A", 2, K_CURRENT, 0}, {L"Power", L"W", 1, K_POWER, 0},
+        {L"Clock", L"MHz", 0, K_CLOCK, 0}, {L"Temperature", L"°C", 1, K_TEMP, 100}, {L"Load", L"%", 0, K_USAGE, 100},
+        {L"Frequency", L"Hz", 0, K_OTHER, 0}, {L"Fan", L"RPM", 0, K_FAN, 0}, {L"Flow", L"L/h", 0, K_OTHER, 0},
+        {L"Control", L"%", 0, K_USAGE, 100}, {L"Level", L"%", 0, K_USAGE, 100}, {L"Factor", L"", 2, K_OTHER, 0},
+        {L"Data", L"GB", 1, K_OTHER, 0}, {L"SmallData", L"MB", 0, K_OTHER, 0}, {L"Throughput", L"MB/s", 1, K_OTHER, 0},
+        {L"TimeSpan", L"s", 0, K_OTHER, 0}, {L"Energy", L"mWh", 0, K_OTHER, 0}, {L"Noise", L"dBA", 0, K_OTHER, 0},
+        {L"Humidity", L"%", 0, K_OTHER, 100},
+    };
+    for (auto& it : lhmCache_) {
+        const TypeInfo* ti = nullptr;
+        for (auto& t : kTypes) if (it.type == t.type) ti = &t;
+        bool have = it.have && !std::isnan(it.value);
+        Add("lhm." + EscKey(ToU8(it.id)), L"LHM · " + it.hwName, it.name, ti ? ti->unit : L"", it.value, have,
+            ti ? ti->range : 0, ti ? ti->dec : 1, ti ? ti->kind : K_OTHER);
+        if (it.hwId.rfind(L"/gpu", 0) == 0 && have)   // /gpu-amd/0, /gpu-intel/0, /gpu-intel-integrated/...
+            lhmGpu_.push_back({it.hwId, it.hwName, it.type, it.name, it.value});
+        ++lhmCount;
     }
     lhmOk = lhmCount > 0;
 }
@@ -339,12 +574,70 @@ void Registry::Update(const mon::Snapshot& s) {
     AddSystem();
     AddRtss();
     AddHwinfoGadget();
-    AddLhm();
+    AddLhm(s.cfg.lhmPort);
+    EnrichGpuFromLhm();
     AddHwinfo();
 }
 
+// AMD / Intel GPUs: Windows counters give load, VRAM, temperature, fan and power %. When LibreHardwareMonitor
+// runs (it reads AMD ADL / Intel IGCL itself), fill in what Windows can't: core clock, hotspot, VRAM temp,
+// core voltage, board power in watts, fan duty. Values RigSense already has stay as they are.
+void Registry::EnrichGpuFromLhm() {
+    gpuFromLhm = false;
+    if (!gpuViaWindows || lhmGpu_.empty()) return;
+    auto lower = [](std::wstring s) { for (auto& c : s) c = wchar_t(towlower(c)); return s; };
+    // pick the LHM GPU that matches the main GPU's name, else the first non-NVIDIA GPU
+    std::wstring want = lower(gpuName), parent;
+    for (auto& g : lhmGpu_)
+        if (!want.empty() && (lower(g.hwName).find(want) != std::wstring::npos || want.find(lower(g.hwName)) != std::wstring::npos)) { parent = g.parent; break; }
+    if (parent.empty())
+        for (auto& g : lhmGpu_) if (g.parent.rfind(L"/gpu-nvidia", 0) != 0) { parent = g.parent; break; }
+    if (parent.empty()) return;
+
+    std::wstring group = std::wstring(L"GPU \u00b7 ") + (gpuName.empty() ? L"main GPU" : gpuName);
+    auto fill = [&](const char* key, const wchar_t* name, const wchar_t* unit, double v, double range, int dec, int kind) {
+        auto it = index_.find(key);
+        if (it != index_.end()) {
+            Sensor& s = list_[it->second];
+            if (s.ok) return;            // keep the existing (Windows) value
+            s.value = v;
+            s.ok = true;
+            if (range > 0) s.rangeMax = range;
+        } else {
+            Add(key, group, name, unit, v, true, range, dec, kind);
+        }
+        gpuFromLhm = true;
+    };
+    bool havePower = false;
+    for (int pass = 0; pass < 2; ++pass)   // pass 0: preferred names, pass 1: fallbacks
+        for (auto& g : lhmGpu_) {
+            if (g.parent != parent) continue;
+            std::wstring n = lower(g.name);
+            bool hot = n.find(L"hot spot") != std::wstring::npos || n.find(L"hotspot") != std::wstring::npos || n.find(L"junction") != std::wstring::npos;
+            bool mem = n.find(L"memory") != std::wstring::npos || n.find(L"vram") != std::wstring::npos;
+            bool core = n.find(L"core") != std::wstring::npos;
+            if (pass == 0) {
+                if (g.type == L"Clock" && core) fill("gpu.core_mhz", L"Core clock", L"MHz", g.value, 3300, 0, K_CLOCK);
+                else if (g.type == L"Clock" && mem) fill("gpu.mem_mhz", L"Memory clock", L"MHz", g.value, 0, 0, K_CLOCK);
+                else if (g.type == L"Temperature" && hot) fill("gpu.hotspot", L"Hotspot temperature", L"\u00b0C", g.value, 110, 1, K_TEMP);
+                else if (g.type == L"Temperature" && mem) fill("gpu.vram_temp", L"VRAM temperature", L"\u00b0C", g.value, 110, 1, K_TEMP);
+                else if (g.type == L"Temperature" && core) fill("gpu.temp", L"GPU temperature", L"\u00b0C", g.value, 100, 0, K_TEMP);
+                else if (g.type == L"Voltage" && core) fill("gpu.core_mv", L"Core voltage", L"mV", g.value * 1000, 1300, 0, K_VOLT);
+                else if (g.type == L"Power" && (n.find(L"package") != std::wstring::npos || n.find(L"total") != std::wstring::npos || n.find(L"board") != std::wstring::npos)) {
+                    if (!havePower) fill("gpu.board_w", L"Board power", L"W", g.value, 0, 0, K_POWER);
+                    havePower = true;
+                } else if (g.type == L"Fan") fill("gpu.fan1_rpm", L"Fan speed", L"RPM", g.value, 3500, 0, K_FAN);
+                else if (g.type == L"Control") fill("gpu.fan1_pct", L"Fan duty", L"%", g.value, 100, 0, K_USAGE);
+                else if (g.type == L"Load" && core) fill("gpu.util", L"GPU load", L"%", g.value, 100, 0, K_USAGE);
+            } else if (g.type == L"Power" && !havePower) {
+                fill("gpu.board_w", L"Board power", L"W", g.value, 0, 0, K_POWER);
+                havePower = true;
+            }
+        }
+}
+
 void Registry::AddBuiltin(const mon::Snapshot& s) {
-    const std::wstring g = L"12V-2x6 connector (per-pin sensor)";
+    const std::wstring g = s.pinSource.empty() ? std::wstring(L"12V-2x6 connector (per-pin)") : L"12V-2x6 \u00b7 " + s.pinSource;
     const auto& c = s.cfg;
     bool ok = s.pinsOk;
     double connW = 0, totA = 0, maxA = 0, minA = 1e9, minV = 1e9;
@@ -376,6 +669,16 @@ void Registry::AddBuiltin(const mon::Snapshot& s) {
         swprintf(name, 32, L"Pin %d voltage", i + 1);
         Add(key, g, name, L"V", s.volts[i], ok, 13, 3, K_VOLT);
     }
+    if (s.pinCount > 6)   // MSI PSU with a second loaded 12V-2x6 connector
+        for (int i = 6; i < 12; ++i) {
+            snprintf(key, sizeof key, "astral.c2_pin%d_a", i - 5);
+            swprintf(name, 32, L"Connector 2 pin %d current", i - 5);
+            auto& p = Add(key, g, name, L"A", s.amps[i], ok, 10, 2, K_CURRENT);
+            p.warn = c.warnA;
+            p.crit = c.limitA;
+        }
+    for (auto& e : s.pinExtras)
+        Add(e.key, g, e.name, e.unit, e.value, ok, e.unit == L"\u00b0C" ? 100 : 0, e.decimals, e.unit == L"\u00b0C" ? K_TEMP : K_OTHER);
 
     const auto& st = s.stats;
     std::wstring gg = L"GPU";
@@ -395,6 +698,11 @@ void Registry::AddBuiltin(const mon::Snapshot& s) {
             g2.vramUsedGB >= 0 && g2.vramTotalGB > 0, 100, 0, K_USAGE);
         Add("gpu.power_pct", gg, L"Power (of limit)", L"%", g2.powerPct, g2.powerPct >= 0, 100, 0, K_USAGE);
         Add("gpu.fan1_rpm", gg, L"Fan speed", L"RPM", g2.fanRpm, g2.fanRpm >= 0, 3500, 0, K_FAN);
+        // Not available from Windows: published offline so panels show the right name; LibreHardwareMonitor fills them in.
+        Add("gpu.core_mhz", gg, L"Core clock", L"MHz", 0, false, 3300, 0, K_CLOCK);
+        Add("gpu.vram_temp", gg, L"VRAM temperature", L"°C", 0, false, 110, 1, K_TEMP);
+        Add("gpu.core_mv", gg, L"Core voltage", L"mV", 0, false, 1300, 0, K_VOLT);
+        Add("gpu.board_w", gg, L"Board power", L"W", 0, false, 0, 0, K_POWER);
         return;
     }
     if (!s.gpuName.empty()) {

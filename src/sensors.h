@@ -37,12 +37,15 @@ public:
     int hwinfoCount = 0;
     bool gadgetOk = false;      // HWiNFO "Gadget" registry values (free, no time limit)
     int gadgetCount = 0;
-    bool lhmOk = false;         // LibreHardwareMonitor WMI (free, open source)
+    bool lhmOk = false;         // LibreHardwareMonitor (free, open source): web server (0.9.5+) or WMI (older)
     int lhmCount = 0;
+    bool lhmProcess = false;    // LibreHardwareMonitor.exe is running
+    std::wstring lhmVia;        // "web server" / "WMI"
     bool rtssOk = false;
     std::wstring rtssApp;
     std::wstring gpuName;       // main GPU (any vendor) behind the gpu.* sensors
     bool gpuViaWindows = false; // gpu.* comes from Windows counters (no NVML)
+    bool gpuFromLhm = false;    // gpu.* was completed with LibreHardwareMonitor values (AMD / Intel detail)
     const gpug::Monitor& Gpus() const { return gpus_; }
 
 private:
@@ -51,7 +54,16 @@ private:
     void AddGpusGeneric(bool nvml);
     void AddHwinfo();
     void AddHwinfoGadget();
-    void AddLhm();
+    struct LhmItem { std::wstring id, hwId, hwName, name, type; double value; bool have; };
+    void AddLhm(int port);
+    bool LhmViaWmi(std::vector<LhmItem>& out);
+    bool LhmViaHttp(std::vector<LhmItem>& out, int port);
+    std::vector<LhmItem> lhmCache_;
+    unsigned long lhmCacheTick_ = 0, lhmHttpFailTick_ = 0;
+    void* http_ = nullptr;   // HINTERNET session
+    void EnrichGpuFromLhm();
+    struct LhmGpuSensor { std::wstring parent, hwName, type, name; double value; };
+    std::vector<LhmGpuSensor> lhmGpu_;
     void AddRtss();
     Sensor& Add(const std::string& key, const std::wstring& group, const std::wstring& name, const std::wstring& unit,
                 double value, bool ok, double rangeMax, int decimals, int kind);

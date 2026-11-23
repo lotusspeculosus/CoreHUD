@@ -855,7 +855,9 @@ void DrawPanelEditor(float W, float H) {
         status(g_reg.gadgetOk && g_reg.gadgetCount > 0,
                g_reg.gadgetOk ? F(L"HWiNFO Gadget: %d values (tick “Report value in Gadget” per sensor)", g_reg.gadgetCount)
                               : L"HWiNFO (free): run it, Sensor settings › HWiNFO Gadget › enable reporting");
-        status(g_reg.lhmOk, g_reg.lhmOk ? F(L"LibreHardwareMonitor: %d sensors", g_reg.lhmCount) : L"LibreHardwareMonitor: not running (free alternative)");
+        status(g_reg.lhmOk, g_reg.lhmOk ? F(L"LibreHardwareMonitor: %d sensors (%s)", g_reg.lhmCount, g_reg.lhmVia.c_str())
+                            : g_reg.lhmProcess ? std::wstring(L"LibreHardwareMonitor running \u2014 enable Options \u203A Remote Web Server \u203A Run")
+                                               : std::wstring(L"LibreHardwareMonitor: not running (free alternative)"));
         status(g_reg.rtssOk, g_reg.rtssOk ? (g_reg.rtssApp.empty() ? std::wstring(L"RTSS: running, no 3D app active") : L"RTSS: FPS from " + g_reg.rtssApp)
                                           : L"RTSS: not running (needed for FPS)");
         if (g_reg.hwinfoOk) status(true, F(L"HWiNFO shared memory: %d values", g_reg.hwinfoCount));

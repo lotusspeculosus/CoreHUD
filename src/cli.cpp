@@ -4,6 +4,7 @@
 //   rigsense-cli.exe --force    read even if the card is not in the known list
 //   rigsense-cli.exe --port 1 --addr 0x2B --gpu 0
 //   rigsense-cli.exe --sensors  list every sensor the panel can use
+//   rigsense-cli.exe --meters   find an external per-pin meter (WireView Pro II / PMD2X / MSI PSU) and read it
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <objbase.h>
@@ -14,6 +15,7 @@
 #include "nvapi_gpu.h"
 #include "nvml_gpu.h"
 #include "sensors.h"
+#include "pinsources.h"
 #include <io.h>
 #include <fcntl.h>
 
@@ -47,6 +49,27 @@ static int ListSensors() {
     return 0;
 }
 
+static int ReadMeters(int count) {
+    pins::Sources src;
+    for (int n = 0; n < count; ++n) {
+        pins::Reading r;
+        std::string err;
+        if (!src.Read(r, err)) {
+            printf("no reading: %s\n", err.c_str());
+            if (!src.Present()) return 1;
+        } else {
+            printf("%ls:", src.Name().c_str());
+            for (int i = 0; i < r.pinCount; ++i) printf("  P%d %.2fA %.2fV", i + 1, r.amps[i], r.volts[i]);
+            printf("\n");
+            for (auto& e : r.extras) printf("    %ls: %.*f %ls\n", e.name.c_str(), e.decimals, e.value, e.unit.c_str());
+            if (r.activeFaults) printf("    ACTIVE FAULTS: 0x%04X\n", r.activeFaults);
+        }
+        fflush(stdout);
+        Sleep(500);
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     int count = 5, port = 1, addr = 0x2B, gpuIndex = -1, interval = 500;
     bool force = false;
@@ -54,6 +77,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         auto next = [&](int& v) { if (i + 1 < argc) v = int(strtol(argv[++i], nullptr, 0)); };
         if (!strcmp(argv[i], "--sensors")) return ListSensors();
+        if (!strcmp(argv[i], "--meters")) return ReadMeters(5);
         if (!strcmp(argv[i], "-n")) next(count);
         else if (!strcmp(argv[i], "--port")) next(port);
         else if (!strcmp(argv[i], "--addr")) next(addr);

@@ -183,7 +183,7 @@ std::vector<Component> Check() {
         c.id = L"lhm";
         c.name = L"LibreHardwareMonitor";
         c.purpose = L"Optional, free — CPU, motherboard, RAM, drive and fan sensors.";
-        c.hint = L"Must be running (it asks for administrator rights). RigSense reads it automatically.";
+        c.hint = L"Run it (admin), then Options \u203A Remote Web Server \u203A Run (port 8085). Versions before 0.9.5 work without that step.";
         c.url = L"https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/latest";
         c.wingetId = L"LibreHardwareMonitor.LibreHardwareMonitor";
         c.needsRunning = true;

@@ -82,8 +82,8 @@ struct Csv {
         SYSTEMTIME st;
         GetLocalTime(&st);
         fprintf(f, "%04u-%02u-%02u %02u:%02u:%02u.%03u,%d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, s.pinsOk ? 1 : 0);
-        for (double v : s.volts) fprintf(f, ",%.3f", s.pinsOk ? v : 0.0);
-        for (double a : s.amps) fprintf(f, ",%.3f", s.pinsOk ? a : 0.0);
+        for (int i = 0; i < 6; ++i) fprintf(f, ",%.3f", s.pinsOk ? s.volts[i] : 0.0);
+        for (int i = 0; i < 6; ++i) fprintf(f, ",%.3f", s.pinsOk ? s.amps[i] : 0.0);
         fprintf(f, ",%.1f,%.3f,%.1f,%d,%d,%d,%.1f,%.1f\n", connW, totalA, s.stats.powerW, s.stats.gpuUtil,
                 s.stats.coreMHz, s.stats.tempC, s.hotspotC, s.vramC);
         if (++pending >= 10) { fflush(f); pending = 0; }
@@ -116,7 +116,6 @@ void ThreadMain(Config cfg) {
             s.subSystemId = gpu.subSystemId;
             s.busId = gpu.busId;
             s.knownCard = nvapi::IsKnownAstral(gpu.subSystemId, &s.model);
-            s.sensorEnabled = s.knownCard || cfg.force;
         }
     }
     std::string nvmlErr;
@@ -124,18 +123,29 @@ void ThreadMain(Config cfg) {
     nvml::Device dev = s.nvmlOk && s.haveGpu ? nvml::FindByBus(gpu.busId) : nullptr;
     if (!dev) s.nvmlOk = false;
 
+    // Per-pin sources: the card's own sensor (ROG Astral) first, otherwise an external meter
+    // (WireView Pro II / PMD2X / MSI GPU Safeguard+ PSU), which works with any GPU brand.
+    const bool astralAvail = s.haveGpu && (s.knownCard || cfg.force);
+    const bool useAstral = astralAvail && (cfg.pinSource == "auto" || cfg.pinSource == "astral");
+    pins::Sources ext;
+    ext.SetPreferred(useAstral || cfg.pinSource == "astral" ? "off" : cfg.pinSource);
+    bool extSeen = false;
+    uint16_t lastFaults = 0;
+    s.sensorEnabled = useAstral;
+
     {
         wchar_t m[256];
         // Informational only: AMD/Intel GPUs and cards without a pin sensor are normal, not errors.
         if (s.haveGpu) {
             swprintf(m, 256, L"Monitoring %hs (subsystem %04X:%04X)", s.gpuName.c_str(), s.subSystemId & 0xFFFF, s.subSystemId >> 16);
             AddEvent(0, m);
-            if (!s.sensorEnabled)
-                AddEvent(0, L"This card has no known per-pin connector sensor - per-pin monitoring off (Force=1 in Settings tries anyway)");
+            if (!useAstral)
+                AddEvent(0, L"This card has no known per-pin connector sensor - looking for an external per-pin meter "
+                            L"(WireView Pro II, PMD2X, MSI Ai1300TS/Ai1600TS)");
             if (!s.nvmlOk) AddEvent(1, L"NVIDIA NVML unavailable - GPU stats fall back to Windows counters");
         } else {
             AddEvent(0, L"No NVIDIA GPU - GPU stats come from Windows counters (works for AMD and Intel). "
-                        L"Per-pin connector monitoring needs a card with a pin sensor.");
+                        L"Looking for an external per-pin meter (WireView Pro II, PMD2X, MSI Ai1300TS/Ai1600TS).");
         }
     }
 
@@ -162,30 +172,66 @@ void ThreadMain(Config cfg) {
         s.csvOn = csv.f != nullptr;
         s.csvPath = csv.path;
 
-        // --- per-pin sensor ---
-        if (s.sensorEnabled) {
-            auto r0 = clock::now();
+        // --- per-pin sensor (on-card or external meter) ---
+        bool attempted = false, ok = false;
+        std::string perr;
+        auto r0 = clock::now();
+        if (useAstral) {
+            attempted = true;
             nvapi::PinReading pr;
-            std::string perr;
-            bool ok = nvapi::ReadPins(gpu.handle, uint8_t(cfg.i2cPort), uint8_t(cfg.i2cAddr), pr, perr);
-            s.readMs = std::chrono::duration<double, std::milli>(clock::now() - r0).count();
-            s.pinsOk = ok;
+            ok = nvapi::ReadPins(gpu.handle, uint8_t(cfg.i2cPort), uint8_t(cfg.i2cAddr), pr, perr);
+            s.pinSource = L"ROG Astral on-card sensor (IT8915FN)";
+            s.pinSourceId = "astral";
             if (ok) {
+                s.pinCount = 6;
+                s.perPinVolts = true;
                 std::copy(pr.volts, pr.volts + 6, s.volts);
                 std::copy(pr.amps, pr.amps + 6, s.amps);
-                s.pinError.clear();
-            } else {
-                s.pinError = perr;
-                ++s.failures;
             }
+        } else if (cfg.pinSource != "off" && cfg.pinSource != "astral") {
+            pins::Reading r;
+            ok = ext.Read(r, perr);
+            if (ext.Present() || ok) {
+                if (!extSeen) AddEvent(0, L"External per-pin meter found: " + ext.Name());
+                extSeen = true;
+                s.pinSource = ext.Name();
+                s.pinSourceId = ext.Id();
+            }
+            attempted = extSeen;   // once a meter was seen, losing it is an alarm, not "no sensor"
+            if (!ok && extSeen && !ext.Present()) perr = "meter disconnected or taken by another app (" + perr + ")";
+            if (ok) {
+                s.pinCount = r.pinCount;
+                s.perPinVolts = r.perPinVolts;
+                std::copy(r.volts, r.volts + pins::kMaxPins, s.volts);
+                std::copy(r.amps, r.amps + pins::kMaxPins, s.amps);
+                s.pinExtras = r.extras;
+                if (r.activeFaults != lastFaults) {
+                    if (r.activeFaults) {
+                        wchar_t m[160];
+                        swprintf(m, 160, L"%s reports an active fault (code 0x%04X) - check the connector", ext.Name().c_str(), r.activeFaults);
+                        AddEvent(2, m);
+                    } else AddEvent(0, L"Per-pin meter fault cleared");
+                    lastFaults = r.activeFaults;
+                }
+            }
+        }
+        s.sensorEnabled = attempted;
+        if (attempted) {
+            s.readMs = std::chrono::duration<double, std::milli>(clock::now() - r0).count();
+            s.pinsOk = ok;
+            if (ok) s.pinError.clear();
+            else { s.pinError = perr; ++s.failures; }
             if (ok != lastPinsOk || firstRead) {
                 if (!ok) AddEvent(2, L"Per-pin sensor read failed: " + Widen(perr));
                 else if (!firstRead) AddEvent(0, L"Per-pin sensor readings recovered");
-                else AddEvent(0, L"Per-pin sensor online (IT8915FN)");
+                else AddEvent(0, L"Per-pin monitoring active: " + s.pinSource);
                 lastPinsOk = ok;
             }
             firstRead = false;
+        } else {
+            s.pinsOk = false;
         }
+        for (int i = s.pinCount; i < pins::kMaxPins; ++i) { s.pinState[i] = 0; s.amps[i] = 0; s.volts[i] = 0; }
 
         // --- GPU stats ---
         if (s.nvmlOk) nvml::Read(dev, s.stats);
@@ -200,14 +246,20 @@ void ThreadMain(Config cfg) {
         // --- derived values, thresholds ---
         double connW = 0, totalA = 0;
         if (s.pinsOk) {
-            double minA = 1e9, maxA = -1, minV = 1e9;
-            for (int i = 0; i < 6; ++i) {
+            double minV = 1e9, spread = 0;
+            for (int c = 0; c < s.pinCount / 6; ++c) {   // imbalance is judged per connector
+                double lo = 1e9, hi = -1;
+                for (int i = c * 6; i < c * 6 + 6; ++i) { lo = std::min(lo, s.amps[i]); hi = std::max(hi, s.amps[i]); }
+                spread = std::max(spread, hi - lo);
+            }
+            for (int i = 0; i < s.pinCount; ++i) {
                 connW += s.volts[i] * s.amps[i];
                 totalA += s.amps[i];
                 s.peakA[i] = std::max(s.peakA[i], s.amps[i]);
-                minA = std::min(minA, s.amps[i]);
-                maxA = std::max(maxA, s.amps[i]);
                 minV = std::min(minV, s.volts[i]);
+                wchar_t pinName[32];
+                if (i < 6) swprintf(pinName, 32, L"Pin %d", i + 1);
+                else swprintf(pinName, 32, L"Connector 2 pin %d", i - 5);
 
                 int st = s.pinState[i], a = 0;
                 double amp = s.amps[i];
@@ -215,10 +267,10 @@ void ThreadMain(Config cfg) {
                 else if (amp >= cfg.warnA || (st >= 1 && amp > cfg.warnA - kHyst)) a = 1;
                 if (a != st) {
                     wchar_t m[160];
-                    if (a == 2) swprintf(m, 160, L"Pin %d at %.2f A - above the %.1f A limit", i + 1, amp, cfg.limitA);
-                    else if (a == 1 && st == 0) swprintf(m, 160, L"Pin %d at %.2f A - above the %.1f A warning level", i + 1, amp, cfg.warnA);
-                    else if (a == 1) swprintf(m, 160, L"Pin %d back below the limit (%.2f A)", i + 1, amp);
-                    else swprintf(m, 160, L"Pin %d back to normal (%.2f A)", i + 1, amp);
+                    if (a == 2) swprintf(m, 160, L"%s at %.2f A - above the %.1f A limit", pinName, amp, cfg.limitA);
+                    else if (a == 1 && st == 0) swprintf(m, 160, L"%s at %.2f A - above the %.1f A warning level", pinName, amp, cfg.warnA);
+                    else if (a == 1) swprintf(m, 160, L"%s back below the limit (%.2f A)", pinName, amp);
+                    else swprintf(m, 160, L"%s back to normal (%.2f A)", pinName, amp);
                     AddEvent(a == 2 ? 2 : (a > st ? 1 : 0), m);
                     if (a == 2 && cfg.beep) MessageBeep(MB_ICONHAND);
                     s.pinState[i] = a;
@@ -247,7 +299,6 @@ void ThreadMain(Config cfg) {
             }
             s.peakConnW = std::max(s.peakConnW, connW);
             s.minVolts = s.minVolts == 0 ? minV : std::min(s.minVolts, minV);
-            double spread = maxA - minA;
             int sp = (spread >= cfg.spreadWarnA || (spreadState && spread > cfg.spreadWarnA - kHyst)) ? 1 : 0;
             if (sp != spreadState) {
                 wchar_t m[160];
@@ -324,7 +375,11 @@ Config LoadConfig(const std::wstring& ini) {
                   "I2CPort=1\n"
                   "I2CAddr=0x2B\n"
                   "; 1 = also read on cards not in the known ROG Astral list (read-only, at your own risk)\n"
-                  "Force=0\n", f);
+                  "Force=0\n"
+                  "; per-pin source: auto (card sensor, else external meter) | astral | wireview | pmd2x | msipsu | off\n"
+                  "PinSource=auto\n"
+                  "; LibreHardwareMonitor web server port (enable it in LHM: Options > Remote Web Server > Run)\n"
+                  "LhmPort=8085\n", f);
             fclose(f);
         }
     }
@@ -353,6 +408,14 @@ Config LoadConfig(const std::wstring& ini) {
     c.i2cPort = std::clamp(int(num(L"Sensor", L"I2CPort", c.i2cPort)), 0, 15);
     c.i2cAddr = std::clamp(int(num(L"Sensor", L"I2CAddr", c.i2cAddr)), 0x03, 0x77);
     c.force = num(L"Sensor", L"Force", 0) != 0;
+    c.lhmPort = std::clamp(int(num(L"Sensor", L"LhmPort", 8085)), 1, 65535);
+    {
+        wchar_t b[32];
+        GetPrivateProfileStringW(L"Sensor", L"PinSource", L"auto", b, 32, ini.c_str());
+        std::string v;
+        for (wchar_t* p = b; *p; ++p) v += char(towlower(*p));
+        if (v == "auto" || v == "astral" || v == "wireview" || v == "pmd2x" || v == "msipsu" || v == "off") c.pinSource = v;
+    }
     return c;
 }
 
