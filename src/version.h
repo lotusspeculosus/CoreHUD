@@ -4,8 +4,8 @@
 
 #define COREHUD_VER_MAJOR 1
 #define COREHUD_VER_MINOR 5
-#define COREHUD_VER_PATCH 0
-#define COREHUD_VERSION_STR "1.5.0"   // keep in sync with the three numbers above (checked in tests\test_update.cpp)
+#define COREHUD_VER_PATCH 1
+#define COREHUD_VERSION_STR "1.5.1"   // keep in sync with the three numbers above (checked in tests\test_update.cpp)
 
 #ifndef RC_INVOKED
 // build.bat writes build\buildinfo.h with the git commit and build date

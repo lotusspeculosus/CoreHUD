@@ -88,6 +88,23 @@ mon::Snapshot g_snap;
 sensors::Registry g_reg;   // every sensor (built-in, any-vendor GPU, HWiNFO, LHM, RTSS)
 std::vector<mon::HistPoint> g_hist;
 std::vector<mon::Event> g_events;
+// Five minutes of a few key sensors, for the dashboard tiles shown when there is no per-pin data.
+struct Trend { std::deque<std::pair<double, float>> pts; double peak = NAN, sum = 0; long long n = 0; };
+std::map<std::string, Trend> g_trends;
+void UpdateTrends() {
+    double now = GetTickCount64() / 1000.0;
+    for (const char* k : {"gpu.board_w", "gpu.power_pct", "gpu.temp", "gpu.hotspot", "gpu.util", "sys.cpu"}) {
+        const sensors::Sensor* s = g_reg.Find(k);
+        if (!s || !s->ok || !std::isfinite(s->value) || (s->kind == sensors::K_TEMP && s->value <= 0)) continue;
+        Trend& t = g_trends[k];
+        t.pts.push_back({now, float(s->value)});
+        t.peak = std::isnan(t.peak) ? s->value : std::max(t.peak, s->value);
+        t.sum += s->value;
+        ++t.n;
+        while (!t.pts.empty() && t.pts.front().first < now - 300) t.pts.pop_front();
+    }
+}
+
 // The card's power connector(s): detected from power-rail telemetry, or the user's choice in Settings.
 conn::Layout g_connChoice = conn::UNKNOWN;   // [Gpu] Connector (UNKNOWN = auto)
 conn::Result g_connDetected, g_conn;           // g_conn = what the UI uses
@@ -313,53 +330,179 @@ float DrawConnectorGlyph(conn::Layout l, float x, float y, float h, uint32_t c, 
     return bx - gap - x;
 }
 
-// Cards with 8-pin PCIe connectors (or slot power only): no per-pin monitoring needed; show the connectors
-// and, when the card reports them, the power per 8-pin input.
-void DrawPcieConnectors(const D2D1_RECT_F& m) {
+// 8-pin PCIe cards (or slot power only): a compact strip with the connectors and, when the card reports them,
+// the power through each 8-pin input. The live trend tiles fill the space below it.
+void DrawPcieStrip(const D2D1_RECT_F& m) {
     Fill(m, kSurface2, 8);
-    float cx = (m.left + m.right) / 2, w = m.right - m.left;
-    bool railPower = false;
-    for (auto& r : g_conn.rails) railPower |= std::isfinite(r.Power());
-    float contentH = g_conn.layout == conn::NONE ? 100.f : 60 + 34 + (railPower ? 90.f : 30.f) + 40;
-    float y = m.top + std::max(24.f, (m.bottom - m.top - 40 - contentH) / 2);   // centred above the footer line
-    if (g_conn.layout == conn::NONE) {
-        Text(L"No power cable to watch", R(m.left, y + 40, w, 26), Fmt(16, 1, 1), kInk);
-        Text(L"This card gets all its power from the PCIe slot on the motherboard (up to 75 W).", R(m.left + 10, y + 70, w - 20, 22), Fmt(12.5f, 0, 1), kInk2);
-    } else {
-        float gw = DrawConnectorGlyph(g_conn.layout, 0, 0, 44, kAccent, 1.f, false);
-        DrawConnectorGlyph(g_conn.layout, cx - gw / 2, y, 44, kAccent);
-        y += 60;
-        Text(conn::Name(g_conn.layout), R(m.left, y, w, 26), Fmt(16, 1, 1), kInk);
-        y += 34;
-        bool anyPower = false;
-        for (auto& r : g_conn.rails) anyPower |= std::isfinite(r.Power());
-        if (anyPower) {
-            int n = int(g_conn.rails.size());
-            float colW = std::min(220.f, (w - 40) / n), x = cx - colW * n / 2;
-            for (const auto& r : g_conn.rails) {
-                double p = r.Power();
-                float bx = x + 14, bwid = colW - 28;
-                Text(F(L"8-pin #%d", r.index), R(x, y, colW, 18), Fmt(12, 1, 1), kInk2);
-                Text(std::isfinite(p) ? F(L"%.0f W", p) : std::wstring(L"—"), R(x, y + 18, colW, 26), Fmt(18, 1, 1), p > 150 ? kWarn : kInk);
-                Fill(R(bx, y + 50, bwid, 8), kSurface3, 4);
-                if (std::isfinite(p) && p > 0) Fill(R(bx, y + 50, bwid * float(std::min(p, 300.0) / 300), 8), p > 150 ? kWarn : kAccent, 4);
-                Line(bx + bwid / 2, y + 46, bx + bwid / 2, y + 62, kMuted, 1.f);   // the 150 W rating, at the middle
-                Text(std::isfinite(r.volts) ? F(L"150 W rated · %.2f V", r.volts) : std::wstring(L"150 W rated"), R(x, y + 62, colW, 16),
-                     Fmt(11, 0, 1), kMuted);
-                x += colW;
-            }
-            y += 90;
-        } else {
-            Text(L"Your card reports only its total power, not the power per connector.", R(m.left + 10, y, w - 20, 20), Fmt(12, 0, 1), kInk2);
-            y += 30;
-        }
-        Text(L"8-pin connectors have a big safety margin: each is rated 150 W and its three 12 V pins can carry far more.",
-             R(m.left + 10, y, w - 20, 20), Fmt(12, 0, 1), kInk2);
-        Text(L"Per-pin monitoring matters for the 12V-2x6 (600 W over six pins), not for these.", R(m.left + 10, y + 20, w - 20, 20), Fmt(12, 0, 1), kInk2);
-    }
+    float x = m.left + 16, h = m.bottom - m.top, w = m.right - m.left;
     std::wstring how = g_conn.fromTelemetry ? L"Detected from the " + g_conn.how + L"  ·  wrong? Settings › Power connector"
                                             : L"Set in Settings › Power connector";
-    Text(how, R(m.left + 10, m.bottom - 30, w - 20, 20), Fmt(11.5f, 0, 1), kMuted);
+    if (g_conn.layout == conn::NONE) {
+        Text(L"No power cable to watch", R(x, m.top + 12, w - 32, 24), Fmt(15, 1), kInk);
+        Text(L"This card gets all its power from the PCIe slot on the motherboard (up to 75 W).", R(x, m.top + 38, w - 32, 20), Fmt(12), kInk2);
+        Text(how, R(x, m.bottom - 26, w - 32, 18), Fmt(11), kMuted);
+        return;
+    }
+    float gh = std::min(40.f, h - 40);
+    float gw = DrawConnectorGlyph(g_conn.layout, x, m.top + 14, gh, kAccent);
+    float tx = x + gw + 18;
+    Text(conn::Name(g_conn.layout), R(tx, m.top + 10, 260, 24), Fmt(15, 1), kInk);
+    Text(L"Rated 150 W each, with a big safety margin: no per-pin monitoring needed.", R(tx, m.top + 34, 420, 18), Fmt(11.5f), kInk2);
+    Text(how, R(tx, m.bottom - 26, 420, 18), Fmt(11), kMuted);
+    // power per 8-pin input, right-aligned
+    bool anyPower = false;
+    for (auto& r : g_conn.rails) anyPower |= std::isfinite(r.Power());
+    float right = m.right - 16;
+    if (!anyPower) {
+        Text(L"The card reports only its total power", R(right - 300, m.top + 10, 300, 20), Fmt(11.5f, 0, 2), kMuted);
+        return;
+    }
+    int n = int(g_conn.rails.size());
+    float colW = std::min(170.f, (right - tx - 440) / std::max(1, n));
+    if (colW < 90) return;   // too narrow: the name + hint are enough
+    float cx = right - colW * n;
+    for (const auto& r : g_conn.rails) {
+        double p = r.Power();
+        float bx = cx + 10, bwid = colW - 20;
+        Text(F(L"8-pin #%d", r.index), R(cx, m.top + 8, colW, 16), Fmt(11, 1, 1), kInk2);
+        Text(std::isfinite(p) ? F(L"%.0f W", p) : std::wstring(L"—"), R(cx, m.top + 24, colW, 24), Fmt(17, 1, 1), p > 150 ? kWarn : kInk);
+        Fill(R(bx, m.top + 52, bwid, 7), kSurface3, 3.5f);
+        if (std::isfinite(p) && p > 0) Fill(R(bx, m.top + 52, bwid * float(std::min(p, 300.0) / 300), 7), p > 150 ? kWarn : kAccent, 3.5f);
+        Line(bx + bwid / 2, m.top + 48, bx + bwid / 2, m.top + 63, kMuted, 1.f);   // the 150 W rating, at the middle
+        Text(std::isfinite(r.volts) ? F(L"%.2f V", r.volts) : std::wstring(L"150 W rated"), R(cx, m.top + 64, colW, 14), Fmt(10.5f, 0, 1), kMuted);
+        cx += colW;
+    }
+}
+
+float FitSize(const std::wstring& t, int weight, float size, float maxW);   // panel_ui.inc
+
+// One live tile: current value, session peak/average and a 5-minute trend line (optionally a second series).
+void DrawTrendTile(const D2D1_RECT_F& r, const std::wstring& label, const char* key, const wchar_t* unit, int decimals, uint32_t color,
+                   double fixedMax, const std::wstring& sub, const char* key2 = nullptr, const wchar_t* label2 = nullptr, uint32_t color2 = 0) {
+    Fill(r, kSurface2, 8);
+    float x = r.left + 14, w = r.right - r.left - 28;
+    Text(label, R(x, r.top + 10, w, 18), Fmt(12, 1), kInk2);
+    auto it = g_trends.find(key);
+    const Trend* t = it != g_trends.end() && !it->second.pts.empty() ? &it->second : nullptr;
+    const Trend* t2 = nullptr;
+    if (key2) {
+        auto i2 = g_trends.find(key2);
+        if (i2 != g_trends.end() && !i2->second.pts.empty()) t2 = &i2->second;
+    }
+    if (!t) {
+        Text(L"Not reported by this PC", R(r.left, (r.top + r.bottom) / 2 - 10, r.right - r.left, 20), Fmt(12, 0, 1), kMuted);
+        return;
+    }
+    std::wstring val = F(L"%.*f", decimals, double(t->pts.back().second));
+    float vw = ValueUnit(val, unit, x, r.top + 30, 34, 26, color);
+    if (!sub.empty()) Text(sub, R(x + vw + 12, r.top + 38, w - vw - 12, 20), Fmt(12), kInk2);
+    Text(F(L"peak %.*f  ·  avg %.*f", decimals, t->peak, decimals, t->n ? t->sum / double(t->n) : 0.0), R(x, r.top + 10, w, 18), Fmt(11.5f, 0, 2), kMuted);
+    if (t2) {   // legend for the second series
+        std::wstring l2 = std::wstring(label2) + F(L" %.*f", decimals, double(t2->pts.back().second));
+        float lw = Measure(l2, Fmt(11.5f)) + 16;
+        Fill(R(r.right - 14 - lw, r.top + 44, 10, 3), color2, 1.5f);
+        Text(l2, R(r.right - 14 - lw + 14, r.top + 34, lw, 20), Fmt(11.5f), kInk2);
+    }
+    // the trend
+    D2D1_RECT_F pr = D2D1::RectF(x, r.top + 74, r.right - 14, r.bottom - 22);
+    if (pr.bottom - pr.top < 20) return;
+    // the time axis grows with the data (from 30 s up to 5 minutes), so a fresh start isn't squeezed to the right edge
+    double now = GetTickCount64() / 1000.0;
+    double win = std::clamp(now - t->pts.front().first, 30.0, 300.0);
+    double lo = 1e18, hi = -1e18;
+    for (const Trend* s : {t, t2}) {
+        if (!s) continue;
+        for (auto& p : s->pts) { lo = std::min(lo, double(p.second)); hi = std::max(hi, double(p.second)); }
+    }
+    if (fixedMax > 0) { lo = 0; hi = fixedMax; }
+    else {   // temperatures and watts: a little room around the data
+        double pad = std::max(2.0, (hi - lo) * 0.15);
+        lo = std::max(0.0, lo - pad);
+        hi += pad;
+    }
+    if (hi <= lo) hi = lo + 1;
+    Line(pr.left, pr.bottom, pr.right, pr.bottom, kAxis, 1.f);
+    Text(F(L"%.0f", hi), R(pr.left, pr.top - 2, 60, 14), Fmt(10, 0, 0), kMuted);
+    Text(win >= 299 ? std::wstring(L"5 min") : win >= 60 ? F(L"%.0f min", std::floor(win / 60)) : F(L"%.0f s", win), R(pr.left, pr.bottom + 3, 60, 14),
+         Fmt(10, 0, 0), kMuted);
+    Text(L"now", R(pr.right - 60, pr.bottom + 3, 60, 14), Fmt(10, 0, 2), kMuted);
+    auto X = [&](double tt) { return pr.left + float(std::clamp((tt - (now - win)) / win, 0.0, 1.0)) * (pr.right - pr.left); };
+    auto Y = [&](double v) { return pr.bottom - float(std::clamp((v - lo) / (hi - lo), 0.0, 1.0)) * (pr.bottom - pr.top); };
+    auto series = [&](const Trend& s, uint32_t c, bool fill) {
+        if (s.pts.size() < 2) return;
+        ID2D1PathGeometry *line = nullptr, *area = nullptr;
+        if (FAILED(g_d2d->CreatePathGeometry(&line))) return;
+        if (fill && FAILED(g_d2d->CreatePathGeometry(&area))) area = nullptr;
+        ID2D1GeometrySink *sl = nullptr, *sa = nullptr;
+        line->Open(&sl);
+        if (area) area->Open(&sa);
+        bool first = true;
+        float lastX = pr.left, firstX = pr.left;
+        for (auto& p : s.pts) {
+            D2D1_POINT_2F q = D2D1::Point2F(X(p.first), Y(p.second));
+            if (first) {
+                sl->BeginFigure(q, D2D1_FIGURE_BEGIN_HOLLOW);
+                if (sa) { sa->BeginFigure(D2D1::Point2F(q.x, pr.bottom), D2D1_FIGURE_BEGIN_FILLED); sa->AddLine(q); }
+                firstX = q.x;
+                first = false;
+            } else {
+                sl->AddLine(q);
+                if (sa) sa->AddLine(q);
+            }
+            lastX = q.x;
+        }
+        sl->EndFigure(D2D1_FIGURE_END_OPEN);
+        sl->Close();
+        sl->Release();
+        if (sa) {
+            sa->AddLine(D2D1::Point2F(lastX, pr.bottom));
+            sa->EndFigure(D2D1_FIGURE_END_CLOSED);
+            sa->Close();
+            sa->Release();
+            g_br->SetColor(Col(c, 0.16f));
+            g_rt->FillGeometry(area, g_br);
+            area->Release();
+        }
+        (void)firstX;
+        g_br->SetColor(Col(c));
+        g_rt->DrawGeometry(line, g_br, 2.f);
+        line->Release();
+    };
+    series(*t, color, true);
+    if (t2) series(*t2, color2, false);
+}
+
+// No per-pin data (no sensor on the card, no meter): instead of an empty pin chart, the connector (or a hint)
+// and four live tiles: GPU power, GPU temperature (+ hotspot), GPU load, CPU load.
+void DrawNoPinView(const D2D1_RECT_F& area, bool pcie) {
+    float y = area.top;
+    if (pcie) {
+        DrawPcieStrip(D2D1::RectF(area.left, y, area.right, y + 92));
+        y += 104;
+    } else {
+        D2D1_RECT_F hint = D2D1::RectF(area.left, y, area.right, y + 40);
+        Fill(hint, kSurface2, 8);
+        std::wstring t = g_conn.layout == conn::HPWR16
+            ? L"Only ASUS ROG Astral cards measure every pin themselves. For this 12V-2x6 card, add a WireView Pro II, PMD2X or MSI Ai1300TS/Ai1600TS PSU."
+            : L"No per-pin sensor (only ROG Astral cards have one built in). Most cards use 8-pin connectors and don't need it. Which one is yours?";
+        float bw = g_conn.layout == conn::UNKNOWN ? 170.f : 0.f;
+        Text(t, D2D1::RectF(area.left + 14, y, area.right - 14 - bw - 10, y + 40), Fmt(FitSize(t, 0, 12.f, area.right - area.left - 38 - bw), 0), kInk2);
+        if (bw > 0) Button(R(area.right - 8 - bw, y + 5, bw, 30), L"Set the connector…", HIT_INI, true, 12.5f);
+        y += 52;
+    }
+    float gap = 12, tw = (area.right - area.left - gap) / 2, th = (area.bottom - y - gap) / 2;
+    if (th < 90) th = (area.bottom - y - gap) / 2;
+    auto tileR = [&](int i) { return R(area.left + (i % 2) * (tw + gap), y + (i / 2) * (th + gap), tw, th); };
+    // GPU power: watts when the driver reports them, else % of the power limit
+    bool watts = g_trends.count("gpu.board_w") && !g_trends["gpu.board_w"].pts.empty();
+    const sensors::Sensor* lim = g_reg.Find("gpu.power_pct");
+    DrawTrendTile(tileR(0), L"GPU POWER", watts ? "gpu.board_w" : "gpu.power_pct", watts ? L"W" : L"%", 0, kSeries[0], watts ? 0 : 100,
+                  watts && lim && lim->ok ? F(L"%.0f %% of the limit", lim->value) : std::wstring());
+    DrawTrendTile(tileR(1), L"GPU TEMPERATURE", "gpu.temp", L"°C", 0, kSeries[1], 0, L"", "gpu.hotspot", L"hotspot", kSeries[4]);
+    const sensors::Sensor* clk = g_reg.Find("gpu.core_mhz");
+    DrawTrendTile(tileR(2), L"GPU LOAD", "gpu.util", L"%", 0, kSeries[2], 100, clk && clk->ok ? F(L"%.0f MHz", clk->value) : std::wstring());
+    const sensors::Sensor* ram = g_reg.Find("sys.ram_pct");
+    DrawTrendTile(tileR(3), L"CPU LOAD", "sys.cpu", L"%", 0, kSeries[3], 100, ram && ram->ok ? F(L"RAM %.0f %%", ram->value) : std::wstring());
 }
 
 void DrawPinPanel(const D2D1_RECT_F& P) {
@@ -369,20 +512,21 @@ void DrawPinPanel(const D2D1_RECT_F& P) {
     Anchor("pins", P);
     float x0 = P.left + 18, x1 = P.right - 18;
     float y = P.top + 14;
-    bool pcie = !s.sensorEnabled && (g_conn.layout == conn::PCIE8_1 || g_conn.layout == conn::PCIE8_2 || g_conn.layout == conn::PCIE8_3 ||
-                                     g_conn.layout == conn::NONE);
+    bool noPins = !s.sensorEnabled;   // no per-pin source at all (a failing one keeps the pin view + its error)
+    bool pcie = noPins && (g_conn.layout == conn::PCIE8_1 || g_conn.layout == conn::PCIE8_2 || g_conn.layout == conn::PCIE8_3 ||
+                           g_conn.layout == conn::NONE);
     Fill(R(x0, y + 4, 26, 26), kAccent, 6, 0.9f);
     Text(L"", R(x0, y + 4, 26, 26), Fmt(13, 0, 1, true), kBg);
-    Text(pcie ? L"Power connectors" : L"Pin distribution", R(x0 + 36, y, 170, 34), Fmt(16, 1), kInk);
+    Text(pcie ? L"Power connectors" : noPins ? L"Power & temperatures" : L"Pin distribution", R(x0 + 36, y, 200, 34), Fmt(16, 1), kInk);
     if (s.sensorEnabled && !s.pinSource.empty()) {
-        Text(L"\u00b7  " + s.pinSource, R(x0 + 190, y, x1 - x0 - 190 - 130, 34), Fmt(12), kMuted);
+        Text(L"·  " + s.pinSource, R(x0 + 190, y, x1 - x0 - 190 - 130, 34), Fmt(12), kMuted);
     } else if (!pcie) {   // which connector the card has (or that it isn't known)
-        float gx = x0 + 196 + DrawConnectorGlyph(g_conn.layout, x0 + 196, y + 9, 16, kInk2, 0.9f);
+        float gx = x0 + 236 + DrawConnectorGlyph(g_conn.layout, x0 + 236, y + 9, 16, kInk2, 0.9f);
         Text(g_conn.layout == conn::UNKNOWN ? std::wstring(L"Connector not detected") : std::wstring(conn::Name(g_conn.layout)),
-             R(gx + 8, y, x1 - gx - 140, 34), Fmt(12), kMuted);
+             R(gx + 8, y, x1 - gx - 8, 34), Fmt(12), kMuted);
     }
-    if (pcie) {
-        DrawPcieConnectors(D2D1::RectF(x0, y + 46, x1, P.bottom - 14));
+    if (noPins) {
+        DrawNoPinView(D2D1::RectF(x0, y + 46, x1, P.bottom - 14), pcie);
         return;
     }
     const wchar_t* modes[] = {L"A", L"W", L"V"};
@@ -708,18 +852,51 @@ void DrawDashboard(float W, float H) {
     double railW = 0;
     bool railOk = !g_conn.rails.empty();
     for (auto& r : g_conn.rails) { double p = r.Power(); railOk &= std::isfinite(p); railW += std::isfinite(p) ? p : 0; }
-    std::wstring connVal = ok ? F(L"%.1f", connW) : railOk ? F(L"%.1f", railW) : std::isfinite(g_conn.hpwrWatts) ? F(L"%.1f", g_conn.hpwrWatts) : na;
-    std::wstring connSub = ok ? (s.stats.powerW >= 0 ? F(L"Board total (driver): %.0f W  ·  rest via PCIe slot", s.stats.powerW) : std::wstring())
-                         : railOk ? F(L"%d× 8-pin inputs, as reported by the card", int(g_conn.rails.size()))
-                         : g_conn.layout == conn::NONE ? std::wstring(L"Slot-powered card: no power cable")
-                         : g_conn.layout == conn::PCIE8_1 || g_conn.layout == conn::PCIE8_2 || g_conn.layout == conn::PCIE8_3
-                             ? std::wstring(conn::Name(g_conn.layout)) + L" · the card doesn't report power per connector"
-                             : std::wstring(L"No per-pin sensor or meter found (see Pin distribution)");
-    DrawKpi(R(pad, y, kw, kh), L"CONNECTOR POWER", connVal, L"W", connSub, L"");
-    DrawKpi(R(pad + kw + 12, y, kw, kh), L"TOTAL CURRENT", ok ? F(L"%.2f", totA) : na, L"A",
-            ok ? F(L"Average %.2f A per pin", totA / 6) : L"", L"");
-    DrawKpi(R(pad + 2 * (kw + 12), y, kw, kh), L"VOLTAGE", ok ? F(L"%.2f", avgV) : na, L"V",
-            ok ? F(L"Lowest pin %.3f V  ·  session low %.3f V", minV, s.minVolts) : L"", L"");
+    // Card 1: connector power from the pins, the 8-pin rails or a 16-pin power sensor. Without any connector data
+    // (no per-pin source, no rail telemetry) the three cards show PC-wide values instead of empty dashes.
+    const sensors::Sensor* boardW = g_reg.Find("gpu.board_w");
+    const sensors::Sensor* powPct = g_reg.Find("gpu.power_pct");
+    std::wstring t1 = L"CONNECTOR POWER", v1 = na, u1 = L"W", s1;
+    if (ok) {
+        v1 = F(L"%.1f", connW);
+        s1 = s.stats.powerW >= 0 ? F(L"Board total (driver): %.0f W  ·  rest via PCIe slot", s.stats.powerW) : std::wstring();
+    } else if (railOk) {
+        v1 = F(L"%.1f", railW);
+        s1 = F(L"%d× 8-pin inputs, as reported by the card", int(g_conn.rails.size()));
+    } else if (std::isfinite(g_conn.hpwrWatts)) {
+        v1 = F(L"%.1f", g_conn.hpwrWatts);
+        s1 = L"12V-2x6 total, from the card's power sensor";
+    } else if (!s.sensorEnabled && boardW && boardW->ok) {
+        t1 = L"GPU POWER";
+        v1 = F(L"%.0f", boardW->value);
+        s1 = powPct && powPct->ok ? F(L"%.0f %% of the power limit  ·  whole card, reported by the driver", powPct->value)
+                                  : std::wstring(L"Whole card, reported by the driver");
+    } else if (!s.sensorEnabled && powPct && powPct->ok) {
+        t1 = L"GPU POWER";
+        v1 = F(L"%.0f", powPct->value);
+        u1 = L"%";
+        s1 = L"Of the power limit (this card reports no watts)";
+    } else {
+        s1 = L"No per-pin sensor or meter found";
+    }
+    DrawKpi(R(pad, y, kw, kh), t1, v1, u1, s1, L"");
+    if (s.sensorEnabled) {
+        DrawKpi(R(pad + kw + 12, y, kw, kh), L"TOTAL CURRENT", ok ? F(L"%.2f", totA) : na, L"A",
+                ok ? F(L"Average %.2f A per pin", totA / 6) : L"", L"");
+        DrawKpi(R(pad + 2 * (kw + 12), y, kw, kh), L"VOLTAGE", ok ? F(L"%.2f", avgV) : na, L"V",
+                ok ? F(L"Lowest pin %.3f V  ·  session low %.3f V", minV, s.minVolts) : L"", L"");
+    } else {
+        const sensors::Sensor* vu = g_reg.Find("gpu.vram_used");
+        const sensors::Sensor* vp = g_reg.Find("gpu.vram_pct");
+        DrawKpi(R(pad + kw + 12, y, kw, kh), L"VRAM", vu && vu->ok ? F(L"%.1f", vu->value) : na, L"GB",
+                vu && vu->ok && vp && vp->ok && vp->value > 0 ? F(L"%.0f %% of %.0f GB in use", vp->value, vu->value * 100 / vp->value) : std::wstring(),
+                L"");
+        const sensors::Sensor* ru = g_reg.Find("sys.ram_used");
+        const sensors::Sensor* rp = g_reg.Find("sys.ram_pct");
+        DrawKpi(R(pad + 2 * (kw + 12), y, kw, kh), L"SYSTEM RAM", ru && ru->ok ? F(L"%.1f", ru->value) : na, L"GB",
+                ru && ru->ok && rp && rp->ok && rp->value > 0 ? F(L"%.0f %% of %.0f GB in use", rp->value, ru->value * 100 / rp->value) : std::wstring(),
+                L"");
+    }
     Anchor("kpis", R(pad, y, W - 2 * pad, kh));
     y += kh + pad;
 
@@ -1012,6 +1189,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
         mon::GetEvents(g_events);
         OnSampleForPanel();
         UpdateConnector();
+        UpdateTrends();
         if (g_setupOpen && GetTickCount() - g_compsTick > 3000) RecheckComponents();
         if (g_upd.applyPending) TryApplyUpdate();
         RenderTabletFrame();
